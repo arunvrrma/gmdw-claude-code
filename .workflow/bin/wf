@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""wf — GMDW workflow CLI. The only legal mutator of state.json.
+
+Commands:
+  init        create a workflow (state=RECEIVED, sets ACTIVE, pins the policy)
+  status      show the active workflow's state, counters, budget
+  expected    show what artifact/agent the current state is waiting for
+  transition  request a state transition (table + guard validated)
+  approve     record a human gate decision as an approval artifact
+  validate    validate an artifact file against its schema
+  close       finalize a terminal workflow (tamper check, index, clear ACTIVE)
+
+Exit codes: 0 ok, 1 governance rejection / validation failure, 2 usage error.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+_FALLBACK_ROOT = _HERE.parent.parent  # repo root when invoked in place
+sys.path.insert(0, str(_FALLBACK_ROOT / ".claude" / "hooks"))
+
+from gmdw import ledger, policy, schemas  # noqa: E402
+from gmdw import state as S               # noqa: E402
+from gmdw.state import GmdwError          # noqa: E402
+
+
+def _root():
+    try:
+        return S.find_root(os.getcwd())
+    except GmdwError:
+        return _FALLBACK_ROOT
+
+
+def _die(msg: str, code: int = 1):
+    print(f"wf: error: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ----------------------------------------------------------------------- #
+
+def cmd_init(a):
+    root = _root()
+    if a.request == "-":
+        text = sys.stdin.read()
+    else:
+        p = Path(a.request)
+        if not p.exists():
+            _die(f"request file not found: {a.request}", 2)
+        text = p.read_text(encoding="utf-8")
+    if not text.strip():
+        _die("request is empty", 2)
+    title = a.title or text.strip().splitlines()[0][:120]
+    try:
+        wf_id = S.create_workflow(root, text, title, a.by, a.profile)
+    except GmdwError as e:
+        _die(str(e))
+    print(json.dumps({"workflow_id": wf_id, "state": "RECEIVED",
+                      "run_dir": f".workflow/runs/{wf_id}"}))
+
+
+def cmd_status(a):
+    root = _root()
+    try:
+        wf_id, st = S.load_state(root, a.workflow)
+    except GmdwError as e:
+        _die(str(e))
+    out = {
+        "workflow_id": wf_id,
+        "title": st["workflow"]["title"],
+        "state": st["state"],
+        "route": st["route"],
+        "flags": st["flags"],
+        "counters": st["counters"],
+        "limits": st["limits"],
+        "budget": st["budget"],
+        "current": st["current"],
+        "plan_approved": st["plan_approved"],
+        "approvals": [{k: v for k, v in ap.items() if k != "notes"}
+                      for ap in st["approvals"]],
+        "escalations": st["escalations"],
+        "open_invocation": st["open_invocation"],
+        "policy_profile": st["policy"]["profile_name"],
+    }
+    print(json.dumps(out, indent=None if a.json else 2))
+
+
+def cmd_expected(a):
+    root = _root()
+    try:
+        _, st = S.load_state(root, a.workflow)
+    except GmdwError as e:
+        _die(str(e))
+    exp = S.expected(root, st)
+    if exp is None:
+        print(json.dumps({"state": st["state"], "expected": None,
+                          "note": "no artifact is produced in this state"}))
+    else:
+        print(json.dumps(exp))
+
+
+def cmd_transition(a):
+    root = _root()
+    try:
+        st = S.transition(root, a.to, a.trigger, actor=a.actor,
+                          reason=a.reason, detail=a.detail)
+    except GmdwError as e:
+        # log the denial so ping-pong attempts leave an audit trail
+        try:
+            wf_id, _st = S.load_state(root)
+            ledger.log(root, wf_id, "transition_denied", to_state=a.to,
+                       from_state=_st["state"], reason=str(e))
+        except GmdwError:
+            pass
+        _die(str(e))
+    print(json.dumps({"state": st["state"],
+                      "entered_at": st["state_entered_at"]}))
+
+
+def cmd_approve(a):
+    root = _root()
+    try:
+        wf_id, st = S.load_state(root, a.workflow)
+    except GmdwError as e:
+        _die(str(e))
+    now = S.utcnow()
+    gate, decision, resolution = a.gate, a.decision, a.resolution
+
+    if gate == "escalation":
+        if not resolution:
+            _die("escalation approval requires --resolution "
+                 "redirect|override|force_approve|abandon", 2)
+        if not st["escalations"] or st["escalations"][-1]["resolution"] != "pending":
+            _die("no pending escalation to resolve")
+        decision = "force_approved" if resolution == "force_approve" else "approved"
+        rel = f"artifacts/approvals/escalation_{len(st['escalations'])}.json"
+    else:
+        if not decision:
+            _die("--decision is required for non-escalation gates", 2)
+        rel = f"artifacts/approvals/{gate}_approval.json"
+
+    version = 1 + sum(1 for ap in st["approvals"] if ap["gate"] == gate)
+    artifact = {
+        "artifact_type": "approval",
+        "workflow_id": wf_id,
+        "version": version,
+        "produced_by": "human",
+        "input_artifact_refs": [a.subject] if a.subject else [],
+        "created_at": now,
+        "status": "complete",
+        "gate": gate,
+        "decision": decision,
+        "by": a.by,
+        "at": now,
+        "subject_ref": a.subject or "",
+        "notes": a.notes or "",
+    }
+    if resolution:
+        artifact["resolution"] = resolution
+    if a.overridden_findings:
+        artifact["overridden_findings"] = a.overridden_findings
+
+    errs = schemas.validate_artifact(root, artifact, "approval")
+    if errs:
+        _die("approval artifact invalid: " + "; ".join(errs))
+
+    full = S.workflow_dir(root, wf_id) / rel
+    if full.exists():
+        _die(f"approval artifact already exists: {rel} (approvals are immutable)")
+    S.atomic_write_json(full, artifact)
+    S.freeze_artifact(root, wf_id, rel, st["state"])
+
+    st["approvals"].append({"gate": gate, "decision": decision, "by": a.by,
+                            "at": now, "artifact_ref": rel,
+                            "notes": a.notes or ""})
+    if gate == "plan" and decision in ("approved", "force_approved"):
+        st["plan_approved"] = True
+    if gate == "escalation":
+        st["escalations"][-1]["resolution"] = resolution
+        st["escalations"][-1]["resolved_at"] = now
+    S.save_state(root, wf_id, st)
+    ledger.log(root, wf_id, "human_approval", gate=gate, decision=decision,
+               by=a.by, resolution=resolution, artifact=rel)
+    print(json.dumps({"gate": gate, "decision": decision, "artifact": rel}))
+
+
+def cmd_validate(a):
+    root = _root()
+    p = Path(a.path)
+    if not p.exists():
+        _die(f"file not found: {a.path}", 2)
+    try:
+        artifact = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        _die(f"not valid JSON: {e}")
+    errs = schemas.validate_artifact(root, artifact, a.type)
+    if errs:
+        print(json.dumps({"valid": False, "errors": errs}, indent=2))
+        sys.exit(1)
+    print(json.dumps({"valid": True}))
+
+
+def cmd_close(a):
+    root = _root()
+    try:
+        wf_id, st = S.load_state(root, a.workflow)
+    except GmdwError as e:
+        _die(str(e))
+    if st["state"] not in S.TERMINAL:
+        _die(f"cannot close: state {st['state']} is not terminal "
+             f"({sorted(S.TERMINAL)})")
+    mismatches = ledger.verify(root, wf_id)
+    if mismatches:
+        ledger.log(root, wf_id, "integrity_violation", detail=mismatches,
+                   phase="close")
+        _die(f"tamper check failed; refusing to close: {mismatches}")
+
+    idx_p = Path(root) / ".workflow" / "index.json"
+    idx = json.loads(idx_p.read_text(encoding="utf-8")) if idx_p.exists() else {}
+    idx[wf_id] = {
+        "title": st["workflow"]["title"],
+        "state": st["state"],
+        "created_at": st["workflow"]["created_at"],
+        "closed_at": S.utcnow(),
+        "cost_usd_estimate": st["budget"]["cost_usd_estimate"],
+        "tokens": st["budget"]["tokens_consumed_estimate"],
+    }
+    S.atomic_write_json(idx_p, idx)
+
+    active = Path(root) / ".workflow" / "ACTIVE"
+    if active.exists() and active.read_text(encoding="utf-8").strip() == wf_id:
+        active.unlink()
+    ledger.log(root, wf_id, "workflow_closed", final_state=st["state"])
+    print(json.dumps({"closed": wf_id, "final_state": st["state"]}))
+
+
+# ----------------------------------------------------------------------- #
+
+def main():
+    ap = argparse.ArgumentParser(prog="wf", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("init", help="create a workflow")
+    p.add_argument("--request", required=True, help="path to request file, or - for stdin")
+    p.add_argument("--title", default=None)
+    p.add_argument("--by", default=os.environ.get("USER", "unknown"))
+    p.add_argument("--profile", default=None, help="policy profile override")
+    p.set_defaults(fn=cmd_init)
+
+    p = sub.add_parser("status", help="show workflow status")
+    p.add_argument("--workflow", default=None)
+    p.add_argument("--json", action="store_true", help="compact single-line JSON")
+    p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("expected", help="what the current state is waiting for")
+    p.add_argument("--workflow", default=None)
+    p.set_defaults(fn=cmd_expected)
+
+    p = sub.add_parser("transition", help="request a state transition")
+    p.add_argument("to", choices=S.STATES)
+    p.add_argument("--trigger", required=True,
+                   help="artifact ref / approval ref that justifies the transition")
+    p.add_argument("--actor", default="orchestrator",
+                   choices=["orchestrator", "hook", "human"])
+    p.add_argument("--reason", default=None,
+                   choices=[None, "revision_limit", "reject_verdict", "agent_blocked",
+                            "budget", "integrity_violation", "stale_workspace", "other"])
+    p.add_argument("--detail", default=None)
+    p.set_defaults(fn=cmd_transition)
+
+    p = sub.add_parser("approve", help="record a human gate decision")
+    p.add_argument("gate", choices=["plan", "architecture", "deployment",
+                                    "escalation", "route_downgrade"])
+    p.add_argument("--decision", default=None,
+                   choices=["approved", "changes_requested", "rejected",
+                            "force_approved"])
+    p.add_argument("--by", required=True)
+    p.add_argument("--subject", default=None, help="artifact being approved")
+    p.add_argument("--notes", default=None)
+    p.add_argument("--resolution", default=None,
+                   choices=["redirect", "override", "force_approve", "abandon"])
+    p.add_argument("--overridden-findings", nargs="*", default=None,
+                   dest="overridden_findings")
+    p.add_argument("--workflow", default=None)
+    p.set_defaults(fn=cmd_approve)
+
+    p = sub.add_parser("validate", help="validate an artifact against its schema")
+    p.add_argument("path")
+    p.add_argument("--type", required=True, choices=sorted(schemas.SCHEMA_FOR_TYPE))
+    p.set_defaults(fn=cmd_validate)
+
+    p = sub.add_parser("close", help="finalize a terminal workflow")
+    p.add_argument("--workflow", default=None)
+    p.set_defaults(fn=cmd_close)
+
+    a = ap.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

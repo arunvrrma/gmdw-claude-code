@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gmdw.local/schemas/state.schema.json",
+  "title": "GMDW workflow state",
+  "type": "object",
+  "required": ["schema_version", "workflow", "policy", "state", "state_entered_at",
+               "route", "flags", "counters", "limits", "budget", "current",
+               "plan_approved", "approvals", "escalations", "history",
+               "open_invocation"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "workflow": {
+      "type": "object",
+      "required": ["id", "title", "request_ref", "created_at", "created_by"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^wf_[0-9]{8}_[0-9]{3}$" },
+        "title": { "type": "string" },
+        "request_ref": { "const": "request.md" },
+        "created_at": { "type": "string" },
+        "created_by": { "type": "string" },
+        "parent_workflow_id": { "type": ["string", "null"] }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": ["profile_name", "profile_snapshot_sha256", "snapshot"],
+      "properties": {
+        "profile_name": { "enum": ["standard", "strict", "expedited"] },
+        "profile_snapshot_sha256": { "type": "string" },
+        "snapshot": { "type": "object" }
+      }
+    },
+    "state": {
+      "enum": ["RECEIVED", "CLASSIFYING", "REPOSITORY_ANALYSIS", "PLANNING",
+               "PLAN_REVIEW", "PLAN_SECURITY_REVIEW", "PLAN_APPROVAL",
+               "IMPLEMENTING", "SECURITY_REVIEW", "CODE_REVIEW", "APPROVED",
+               "ESCALATED", "COMPLETED", "FAILED", "REJECTED"]
+    },
+    "state_entered_at": { "type": "string" },
+    "route": { "enum": ["trivial", "medium", "full"] },
+    "flags": {
+      "type": "object",
+      "required": ["security", "data_model", "budget_warning", "integrity_hold"],
+      "properties": {
+        "security": { "type": "boolean" },
+        "data_model": { "type": "boolean" },
+        "budget_warning": { "type": "boolean" },
+        "integrity_hold": { "type": "boolean" }
+      }
+    },
+    "counters": {
+      "type": "object",
+      "required": ["plan_revisions", "impl_revisions", "review_cycles",
+                   "plan_reviews", "security_reviews", "code_reviews",
+                   "agent_invocations", "consecutive_failures"],
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "limits": {
+      "type": "object",
+      "required": ["max_plan_revisions", "max_impl_revisions", "max_review_cycles",
+                   "max_agent_invocations", "per_invocation_timeout_min",
+                   "wall_clock_hours"],
+      "additionalProperties": { "type": "integer", "minimum": 1 }
+    },
+    "budget": {
+      "type": "object",
+      "required": ["token_budget", "tokens_consumed_estimate", "usage_by_role",
+                   "cost_usd_estimate", "deadline"],
+      "properties": {
+        "token_budget": { "type": "integer", "minimum": 1 },
+        "tokens_consumed_estimate": { "type": "integer", "minimum": 0 },
+        "usage_by_role": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "cost_usd_estimate": { "type": "number", "minimum": 0 },
+        "deadline": { "type": "string" }
+      }
+    },
+    "current": {
+      "type": "object",
+      "required": ["classification", "repo_analysis", "plan", "plan_review",
+                   "security_review_plan", "implementation",
+                   "security_review_code", "code_review"],
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "plan_approved": { "type": "boolean" },
+    "approvals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["gate", "decision", "by", "at", "artifact_ref"],
+        "properties": {
+          "gate": { "enum": ["plan", "architecture", "deployment", "escalation",
+                             "route_downgrade"] },
+          "decision": { "enum": ["approved", "changes_requested", "rejected",
+                                 "force_approved"] },
+          "by": { "type": "string" },
+          "at": { "type": "string" },
+          "artifact_ref": { "type": "string" },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "escalations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["at", "from_state", "reason", "resolution"],
+        "properties": {
+          "at": { "type": "string" },
+          "from_state": { "type": "string" },
+          "reason": { "enum": ["revision_limit", "reject_verdict", "agent_blocked",
+                               "budget", "integrity_violation", "stale_workspace",
+                               "other"] },
+          "detail": { "type": "string" },
+          "resolution": { "enum": ["pending", "redirect", "override",
+                                   "force_approve", "abandon"] },
+          "resolved_at": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "history": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["ts", "from", "to", "trigger", "actor"],
+        "properties": {
+          "ts": { "type": "string" },
+          "from": { "type": "string" },
+          "to": { "type": "string" },
+          "trigger": { "type": "string" },
+          "actor": { "enum": ["orchestrator", "hook", "human"] }
+        }
+      }
+    },
+    "open_invocation": {
+      "type": ["object", "null"],
+      "properties": {
+        "agent": { "type": "string" },
+        "started_at": { "type": "string" },
+        "expected_artifact": { "type": "string" },
+        "expected_type": { "type": "string" },
+        "version": { "type": "integer" },
+        "retries": { "type": "integer" }
+      }
+    },
+    "last_invocation": { "type": ["object", "null"] }
+  }
+}

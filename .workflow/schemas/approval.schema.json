@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gmdw.local/schemas/approval.schema.json",
+  "title": "GMDW human approval record",
+  "type": "object",
+  "required": ["gate", "decision", "by", "at", "subject_ref"],
+  "properties": {
+    "gate": {
+      "enum": ["plan", "architecture", "deployment", "escalation", "route_downgrade"]
+    },
+    "decision": {
+      "enum": ["approved", "changes_requested", "rejected", "force_approved"]
+    },
+    "by": { "type": "string" },
+    "at": { "type": "string" },
+    "subject_ref": { "type": "string" },
+    "notes": { "type": "string" },
+    "resolution": {
+      "enum": ["redirect", "override", "force_approve", "abandon"]
+    },
+    "overridden_findings": { "type": "array", "items": { "type": "string" } }
+  }
+}

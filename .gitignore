@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.tmp
+.workflow/runs/*/artifacts/**/*.tmp
+.pytest_cache/

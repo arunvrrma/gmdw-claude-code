@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gmdw.local/schemas/envelope.schema.json",
+  "title": "GMDW artifact envelope",
+  "description": "Shared header carried by every GMDW artifact. Type-specific schemas are validated in addition to this one.",
+  "type": "object",
+  "required": ["artifact_type", "workflow_id", "version", "produced_by",
+               "input_artifact_refs", "created_at", "status"],
+  "properties": {
+    "artifact_type": {
+      "enum": ["classification", "repo_analysis", "plan", "plan_review",
+               "security_review_plan", "security_review_code",
+               "implementation_manifest", "code_review", "approval"]
+    },
+    "workflow_id": { "type": "string", "pattern": "^wf_[0-9]{8}_[0-9]{3}$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "produced_by": {
+      "enum": ["orchestrator", "repo-analyst", "planner", "plan-reviewer",
+               "implementor", "security-reviewer", "code-reviewer", "human"]
+    },
+    "input_artifact_refs": { "type": "array", "items": { "type": "string" } },
+    "created_at": { "type": "string" },
+    "status": { "enum": ["complete", "blocked", "error"] },
+    "blocked_reason": { "type": "string" }
+  }
+}

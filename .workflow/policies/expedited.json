@@ -1,0 +1,53 @@
+{
+  "name": "expedited",
+  "description": "For prototypes and internal tooling. Larger trivial threshold, lighter human gates, cheaper models where volume dominates. Security triggers stay at the standard floor — profiles may tighten security, never loosen it (enforced by policy validation). The deployment gate is a floor and remains blocking.",
+  "routing": {
+    "t1": 5,
+    "t2": 9,
+    "flag_rules": {
+      "security": { "dimension": "security", "min": 2 },
+      "data_model": { "dimension": "data_model", "min": 2 }
+    },
+    "trivial_max_files": 5
+  },
+  "limits": {
+    "max_plan_revisions": 1,
+    "max_impl_revisions": 2,
+    "max_review_cycles": 4,
+    "max_agent_invocations": 10,
+    "per_invocation_timeout_min": 20,
+    "wall_clock_hours": 6
+  },
+  "budget": {
+    "token_budget": 800000,
+    "soft_threshold_pct": 80,
+    "cost_ceiling_usd": 8
+  },
+  "gates": {
+    "plan_approval": { "trivial": "off", "medium": "off", "full": "notify" },
+    "architecture_approval": { "enabled": false,
+                               "trigger": { "dimension": "architectural", "min": 3 } },
+    "deployment_approval": "blocking"
+  },
+  "security": {
+    "plan_review_trigger": 2,
+    "code_review_trigger": 2,
+    "always_review_plans": false
+  },
+  "verification": {
+    "rerun_tests": false,
+    "path_existence_checks": true,
+    "tamper_check_on_finalize": true
+  },
+  "models": {
+    "orchestrator":      { "model": "opus",   "effort": "medium" },
+    "repo-analyst":      { "model": "haiku",  "effort": "medium" },
+    "planner":           { "model": "opus",   "effort": "medium" },
+    "plan-reviewer":     { "model": "sonnet", "effort": "high" },
+    "implementor":       { "model": "sonnet", "effort": "high" },
+    "security-reviewer": { "model": "opus",   "effort": "high" },
+    "code-reviewer":     { "model": "sonnet", "effort": "high" },
+    "escalate_implementor_after_revisions": 1
+  },
+  "finalization": { "mode": "branch_only", "require_ci_green": false }
+}

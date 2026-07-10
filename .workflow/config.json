@@ -1,0 +1,10 @@
+{
+  "policy_profile": "standard",
+  "approvers": {
+    "plan": null,
+    "architecture": null,
+    "deployment": null
+  },
+  "allow_non_gmdw_subagents": false,
+  "notes": "approvers: null means the requesting human approves; set a name/handle to route gates to a designated approver. allow_non_gmdw_subagents: when false, ALL subagent invocations are denied unless a GMDW workflow is active and the invocation matches the state machine."
+}

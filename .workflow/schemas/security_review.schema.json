@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gmdw.local/schemas/security_review.schema.json",
+  "title": "GMDW security review (plan and code modes)",
+  "type": "object",
+  "required": ["mode", "subject_ref", "verdict", "verdict_rationale", "checked",
+               "findings"],
+  "properties": {
+    "mode": { "enum": ["plan", "code"] },
+    "subject_ref": { "type": "string" },
+    "verdict": { "enum": ["approve", "revise", "reject"] },
+    "verdict_rationale": { "type": "string" },
+    "checked": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["area", "evidence"],
+        "properties": {
+          "area": {
+            "enum": ["authn_authz", "input_handling", "secrets", "web_flows",
+                     "data_exposure", "dependencies", "crypto", "other"]
+          },
+          "evidence": { "type": "string" }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "location", "description",
+                     "exploit_scenario", "remediation"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^SF[0-9]+$" },
+          "severity": { "enum": ["blocker", "major", "minor", "info"] },
+          "location": { "type": "string" },
+          "description": { "type": "string" },
+          "exploit_scenario": { "type": "string" },
+          "remediation": { "type": "string" },
+          "resolves_prior_finding": { "type": "string" }
+        }
+      }
+    }
+  }
+}
