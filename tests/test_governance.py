@@ -355,6 +355,29 @@ class TestArtifacts(Base):
         self.assertEqual(st["current"]["repo_analysis"], 1)
         self.assertTrue(ledger.is_frozen(self.tmp, self.wid, rel2))
 
+    def test_P4_orchestrator_classification_accepted_on_transition(self):
+        # Regression: the Orchestrator writes classification itself, so no
+        # SubagentStop fires to advance current.classification. wf transition
+        # must accept the on-disk classification (pointer starts at 0) before
+        # guarding, or CLASSIFYING can never be left. set_pointer=False mimics
+        # the real orchestrator-write path the other tests short-circuit.
+        rel, _ = self.write_artifact("classification", 1,
+                                     self.classification(route="full"),
+                                     freeze=False, set_pointer=False)
+        self.seed(state="CLASSIFYING", route="medium", flags={"security": False})
+        _, st = self.load()
+        self.assertEqual(st["current"]["classification"], 0)
+        r = self.wf("transition", "REPOSITORY_ANALYSIS", "--trigger", rel)
+        self.assertEqual(r.returncode, 0, f"transition failed: {r.stderr}")
+        _, st = self.load()
+        self.assertEqual(st["state"], "REPOSITORY_ANALYSIS")
+        self.assertEqual(st["current"]["classification"], 1)
+        self.assertTrue(ledger.is_frozen(self.tmp, self.wid, rel),
+                        "accepted classification must be frozen (immutable)")
+        # routing + flags are synced from the accepted classification artifact
+        self.assertEqual(st["route"], "full")
+        self.assertTrue(st["flags"]["security"])
+
     def test_09_tampered_artifact(self):
         rel, full = self.write_artifact("plan", 1, self.plan())
         self.assertEqual(ledger.verify(self.tmp, self.wid), [])

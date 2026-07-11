@@ -1,1 +1,10 @@
-{}
+{
+  "wf_20260711_001": {
+    "title": "Review the unchanged (committed, git-clean) source code and docs of the external-kb repo at ~/work/external-workspace/auto",
+    "state": "REJECTED",
+    "created_at": "2026-07-11T08:31:06Z",
+    "closed_at": "2026-07-11T08:39:20Z",
+    "cost_usd_estimate": 0.0,
+    "tokens": 0
+  }
+}

@@ -457,9 +457,44 @@ def _sync_routing(root, st: dict) -> None:
         st["flags"]["data_model"] = "data_model" in cls.get("override_flags", [])
 
 
+# Artifact types the Orchestrator writes directly (no subagent, therefore no
+# SubagentStop accept fires for them). They are accepted here instead.
+ORCHESTRATOR_ARTIFACTS = ("classification",)
+
+
+def _accept_orchestrator_artifacts(root, st: dict) -> int:
+    """Accept orchestrator-written artifacts that are on disk but not yet
+    pointed to by ``current``. Mirrors the SubagentStop accept path
+    (validate -> freeze -> advance the pointer) for artifacts the Orchestrator
+    produces itself, since no SubagentStop hook fires for its own writes.
+    Invalid drafts are left unaccepted so the guard surfaces the failure.
+    Returns the number of artifacts accepted."""
+    wf_id = st["workflow"]["id"]
+    accepted = 0
+    for atype in ORCHESTRATOR_ARTIFACTS:
+        while True:
+            nxt = st["current"].get(atype, 0) + 1
+            art = load_artifact(root, st, atype, nxt)
+            if art is None:
+                break
+            if schemas.validate_artifact(root, art, atype):
+                break  # invalid draft: leave unaccepted; the guard will reject
+            st["current"][atype] = nxt
+            freeze_artifact(root, wf_id, artifact_relpath(atype, nxt), st["state"])
+            ledger.log(root, wf_id, "artifact_accepted",
+                       path=artifact_relpath(atype, nxt), atype=atype,
+                       version=nxt, actor="orchestrator")
+            accepted += 1
+    return accepted
+
+
 def transition(root, to: str, trigger: str, actor: str = "orchestrator",
                reason: str | None = None, detail: str | None = None) -> dict:
     wf_id, st = load_state(root)
+    # Accept any pending orchestrator-written artifact (e.g. classification)
+    # before guarding: its pointer must be current for the guard to see it.
+    if _accept_orchestrator_artifacts(root, st):
+        save_state(root, wf_id, st)
     frm = st["state"]
     if to not in TRANSITIONS.get(frm, set()):
         raise GmdwError(f"illegal transition {frm} -> {to} (not in transition table)")
