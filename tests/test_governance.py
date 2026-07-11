@@ -378,6 +378,38 @@ class TestArtifacts(Base):
         self.assertEqual(st["route"], "full")
         self.assertTrue(st["flags"]["security"])
 
+    def test_P5_second_invocation_validated_not_skipped(self):
+        # Regression for the invocation-precedence bug: after the first agent
+        # completes, PostToolUse leaves last_invocation without an expected_type.
+        # SubagentStop must validate against the ACTIVE open_invocation (set by
+        # the gate), not the stale last_invocation -- otherwise every 2nd+ agent
+        # artifact in a workflow is silently skipped (never validated/accepted).
+        ra = {"stack": {"languages": ["python"]},
+              "relevant_modules": [{"finding": "app", "evidence": "src/app.py"}],
+              "conventions": [], "test_infrastructure": {"test_command": "pytest"},
+              "security_surfaces": [], "unverified": []}
+        rel = S.artifact_relpath("repo_analysis", 1)
+        full = S.workflow_dir(self.tmp, self.wid) / rel
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(json.dumps(
+            {**self.envelope("repo_analysis", 1, "repo-analyst"), **ra}, indent=2))
+        self.seed(state="REPOSITORY_ANALYSIS",
+                  # stale record from a prior completed invocation: NO expected_type
+                  last_invocation={"agent": "repo-analyst",
+                                   "closed_at": S.utcnow(), "errored": None,
+                                   "tokens": 100},
+                  # the gate's record of the CURRENT (2nd) invocation
+                  open_invocation={"agent": "repo-analyst",
+                                   "expected_type": "repo_analysis", "version": 1,
+                                   "expected_artifact": rel})
+        d = self.subagentstop()
+        self.assertIsNone(d, f"expected accept, got {d}")
+        _, st = self.load()
+        self.assertEqual(st["current"]["repo_analysis"], 1,
+                         "2nd-invocation artifact must be validated + accepted")
+        self.assertTrue(ledger.is_frozen(self.tmp, self.wid, rel))
+        self.assertIsNone(st["open_invocation"])
+
     def test_09_tampered_artifact(self):
         rel, full = self.write_artifact("plan", 1, self.plan())
         self.assertEqual(ledger.verify(self.tmp, self.wid), [])

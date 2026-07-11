@@ -184,8 +184,14 @@ def main():
         ok()
     _, st = S.load_state(root, wid)
 
-    # Which artifact was this invocation expected to produce?
-    inv = st.get("last_invocation") or st.get("open_invocation")
+    # Which artifact was this invocation expected to produce? The ACTIVE
+    # invocation (open_invocation, set by the gate with expected_type/version)
+    # is authoritative here: SubagentStop fires before PostToolUse clears it,
+    # so it is still current. last_invocation is only a fallback (e.g. tests
+    # that seed it directly) and can be a stale prior record without an
+    # expected_type -- preferring it would skip validation on every 2nd+
+    # invocation in a workflow.
+    inv = st.get("open_invocation") or st.get("last_invocation")
     if not inv:
         ok()  # not a GMDW agent invocation we track
     atype = inv.get("expected_type")
