@@ -45,7 +45,12 @@ def ok():
 def _fail(root, wid, st, reason: str, event: str, **extra):
     st["counters"]["consecutive_failures"] = \
         st["counters"].get("consecutive_failures", 0) + 1
-    st["open_invocation"] = None
+    # Keep open_invocation set: the block reason is fed back to the agent, which
+    # may correct the artifact and stop again. Retaining the active invocation
+    # (with its expected_type/version) lets that corrected re-stop be re-validated
+    # and accepted, instead of stranding a valid-but-unaccepted artifact. If the
+    # agent gives up instead, PostToolUse clears open_invocation when the Agent
+    # tool returns, so this never deadlocks the next invocation.
     S.save_state(root, wid, st)
     ledger.log(root, wid, event, reason=reason,
                consecutive_failures=st["counters"]["consecutive_failures"], **extra)

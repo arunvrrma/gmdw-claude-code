@@ -14,5 +14,13 @@
     "closed_at": "2026-07-11T09:12:14Z",
     "cost_usd_estimate": 1.0268,
     "tokens": 190155
+  },
+  "wf_20260711_003": {
+    "title": "Review the unchanged (committed, git-clean) source code and docs of the external-kb repo at ~/work/external-workspace/auto",
+    "state": "REJECTED",
+    "created_at": "2026-07-11T09:14:21Z",
+    "closed_at": "2026-07-12T09:59:16Z",
+    "cost_usd_estimate": 1.7718,
+    "tokens": 236857
   }
 }

@@ -410,6 +410,50 @@ class TestArtifacts(Base):
         self.assertTrue(ledger.is_frozen(self.tmp, self.wid, rel))
         self.assertIsNone(st["open_invocation"])
 
+    def test_P6_in_invocation_correction_revalidated(self):
+        # Regression for gap #3: after a SubagentStop rejection, open_invocation
+        # must stay set so the agent's corrected artifact is re-validated (and
+        # accepted) on its NEXT stop -- otherwise a valid-but-unaccepted artifact
+        # is stranded and the workflow silently stalls.
+        self.write_artifact("classification", 1, self.classification(), freeze=True)
+        rel = S.artifact_relpath("repo_analysis", 1)
+        full = S.workflow_dir(self.tmp, self.wid) / rel
+        full.parent.mkdir(parents=True, exist_ok=True)
+        open_inv = {"agent": "repo-analyst", "expected_type": "repo_analysis",
+                    "version": 1, "expected_artifact": rel}
+        ra_body = {"stack": {"languages": ["python"]},
+                   "relevant_modules": [{"finding": "app",
+                                         "evidence": "src/app.py"}],
+                   "conventions": [], "test_infrastructure":
+                   {"test_command": "pytest"}, "security_surfaces": [],
+                   "unverified": []}
+        # 1) first stop: INVALID artifact_type -> rejected
+        full.write_text(json.dumps({"artifact_type": "review",  # wrong enum value
+                                    "workflow_id": self.wid, "version": 1,
+                                    "produced_by": "repo-analyst",
+                                    "input_artifact_refs": [],
+                                    "created_at": S.utcnow(), "status": "complete",
+                                    **ra_body}))
+        self.seed(state="REPOSITORY_ANALYSIS", open_invocation=open_inv,
+                  # stale prior-completion record, no expected_type
+                  last_invocation={"agent": "repo-analyst", "closed_at": S.utcnow(),
+                                   "errored": None, "tokens": 1})
+        d = self.subagentstop()
+        self.assertBlocked(d, "artifact_type")
+        _, st = self.load()
+        self.assertEqual(st["current"]["repo_analysis"], 0)
+        self.assertIsNotNone(st["open_invocation"],
+                             "gap #3: open_invocation must survive a rejection")
+        # 2) agent corrects the artifact and stops again -> must be accepted
+        full.write_text(json.dumps(
+            {**self.envelope("repo_analysis", 1, "repo-analyst"), **ra_body}))
+        d2 = self.subagentstop()
+        self.assertIsNone(d2, f"expected accept on corrected re-stop, got {d2}")
+        _, st = self.load()
+        self.assertEqual(st["current"]["repo_analysis"], 1)
+        self.assertTrue(ledger.is_frozen(self.tmp, self.wid, rel))
+        self.assertEqual(st["counters"]["consecutive_failures"], 0)
+
     def test_09_tampered_artifact(self):
         rel, full = self.write_artifact("plan", 1, self.plan())
         self.assertEqual(ledger.verify(self.tmp, self.wid), [])
