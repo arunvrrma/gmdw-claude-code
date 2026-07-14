@@ -24,7 +24,7 @@ _HERE = Path(__file__).resolve().parent
 _FALLBACK_ROOT = _HERE.parent.parent  # repo root when invoked in place
 sys.path.insert(0, str(_FALLBACK_ROOT / ".claude" / "hooks"))
 
-from gmdw import ledger, policy, schemas  # noqa: E402
+from gmdw import heartbeat, ledger, policy, schemas  # noqa: E402
 from gmdw import state as S               # noqa: E402
 from gmdw.state import GmdwError          # noqa: E402
 
@@ -55,10 +55,36 @@ def cmd_init(a):
     if not text.strip():
         _die("request is empty", 2)
     title = a.title or text.strip().splitlines()[0][:120]
+
+    # Governance-liveness preflight (ADR-001 Phase 1). GMDW's guarantees are
+    # enforced by hooks that exist only when Claude Code loaded THIS project's
+    # settings. If they are not firing in this session, creating a workflow
+    # would advance state with no enforcement (ungoverned writes/invocations on
+    # the trivial route, or a deadlock at the first hook-owned acceptance).
+    # Refuse fast with an actionable message rather than fail later.
+    live, why = heartbeat.status(root)
+    bypass = os.environ.get("GMDW_ALLOW_UNGOVERNED_INIT")
+    if not live and not bypass:
+        _die("governance hooks are not active in this session — refusing to "
+             "start a workflow.\n"
+             f"  reason: {why}\n"
+             "  Enforcement (invocation gating, write-scoping, budgets, artifact\n"
+             "  acceptance) is provided by hooks registered in this project's\n"
+             "  .claude/settings.json. Launch Claude Code with gmdw-claude-code as\n"
+             "  the project root and retry.\n"
+             "  For legitimate non-Claude use (CI, manual ops) set\n"
+             "  GMDW_ALLOW_UNGOVERNED_INIT=1 to override (recorded in the ledger).")
+
     try:
         wf_id = S.create_workflow(root, text, title, a.by, a.profile)
     except GmdwError as e:
         _die(str(e))
+
+    if not live:  # bypass was set: record the ungoverned start in the audit trail
+        ledger.log(root, wf_id, "governance_liveness_bypassed", reason=why, by=a.by)
+        print(f"wf: warning: {why}; proceeding under GMDW_ALLOW_UNGOVERNED_INIT "
+              f"(recorded in the ledger)", file=sys.stderr)
+
     print(json.dumps({"workflow_id": wf_id, "state": "RECEIVED",
                       "run_dir": f".workflow/runs/{wf_id}"}))
 

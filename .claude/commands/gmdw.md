@@ -42,6 +42,13 @@ Then a task line telling the agent to read its inputs and write its artifact.
 Run: `.workflow/bin/wf init --request <file-or-"-"> --by <you>`. Capture the
 `workflow_id`. Then `wf transition CLASSIFYING --trigger init`.
 
+If `wf init` refuses with "governance hooks are not active", the enforcement
+hooks are not firing in this session (e.g. Claude Code was launched from a
+different project root) — governance would be absent. Relaunch Claude Code with
+`gmdw-claude-code` as the project root and retry; do NOT set
+`GMDW_ALLOW_UNGOVERNED_INIT` from an interactive run (it is for CI / manual ops
+and is recorded in the ledger).
+
 ### 1. CLASSIFYING (your own work — no agent)
 Do light read-only recon (Glob/Grep top-level) to sanity-check the request. Score six
 dimensions 0–3: files_impacted, architectural, security, data_model, integrations,

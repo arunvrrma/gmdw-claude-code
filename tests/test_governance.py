@@ -21,6 +21,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / ".claude" / "hooks"))
+from gmdw import heartbeat  # noqa: E402
 from gmdw import ledger  # noqa: E402
 from gmdw import state as S  # noqa: E402
 
@@ -232,7 +233,8 @@ class TestWriteScope(Base):
         for p in (".workflow/runs/%s/state.json" % self.wid,
                   ".claude/hooks/pretooluse_gate.py",
                   ".workflow/policies/standard.json",
-                  ".claude/settings.json"):
+                  ".claude/settings.json",
+                  ".workflow/.hooks_heartbeat"):
             self.assertDenied(self.pretool("Write", {"file_path": p, "content": "x"}),
                               "governance-protected")
 
@@ -597,6 +599,130 @@ class TestLegalPath(Base):
                                    "prompt": self.invocation_prompt(exp)},
                          model="haiku")  # policy says sonnet for repo-analyst
         self.assertDenied(d, "policy assigns model")
+
+
+# =========================================================================== #
+# Governance-liveness heartbeat (ADR-001 Phase 1)
+# =========================================================================== #
+
+class TestGovernanceLiveness(unittest.TestCase):
+    """`wf init` must refuse to start a workflow in a session where the
+    enforcement hooks are not firing (the out-of-project deadlock from
+    wf_20260713_003 / KNOWN_LIMITATIONS R4,F1). It attests liveness via the
+    heartbeat the hooks write. These tests build a fresh repo skeleton with NO
+    ACTIVE workflow, so they exercise the CLI init path directly."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="gmdw_live_"))
+        shutil.copytree(REPO / ".claude", self.tmp / ".claude")
+        for sub in ("schemas", "policies", "bin"):
+            shutil.copytree(REPO / ".workflow" / sub, self.tmp / ".workflow" / sub)
+        (self.tmp / ".workflow" / "runs").mkdir(parents=True)
+        shutil.copy(REPO / ".workflow" / "config.json",
+                    self.tmp / ".workflow" / "config.json")
+        (self.tmp / ".workflow" / "index.json").write_text("{}\n")
+        os.chmod(self.tmp / ".workflow" / "bin" / "wf", 0o755)
+        (self.tmp / "request.md").write_text("Do a thing\nwith details\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def wf(self, *args, env=None):
+        e = {**os.environ, **(env or {})}
+        return subprocess.run([sys.executable,
+                               str(self.tmp / ".workflow" / "bin" / "wf"), *args],
+                              capture_output=True, text=True, cwd=str(self.tmp),
+                              env=e)
+
+    def drive_hook(self, tool="Bash", tool_input=None):
+        """Fire the real PreToolUse gate exactly as Claude Code would on a Bash
+        call — this is what writes the heartbeat in a governed session."""
+        payload = {"tool_name": tool,
+                   "tool_input": tool_input or {"command": ".workflow/bin/wf init"},
+                   "cwd": str(self.tmp)}
+        subprocess.run([sys.executable,
+                        str(self.tmp / ".claude" / "hooks" / "pretooluse_gate.py")],
+                       input=json.dumps(payload), capture_output=True, text=True,
+                       cwd=str(self.tmp))
+
+    def write_heartbeat(self, age_sec):
+        # age_sec > 0 => past; age_sec < 0 => future
+        ts = (S.datetime.datetime.now(S.datetime.timezone.utc)
+              - S.datetime.timedelta(seconds=age_sec)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        p = self.tmp / heartbeat.HEARTBEAT_REL
+        p.write_text(json.dumps({"ts": ts, "event": "PreToolUse", "pid": 1}))
+
+    def test_L1_init_refused_when_hookless(self):
+        # No heartbeat at all: the enforcement plane is absent. init must refuse.
+        r = self.wf("init", "--request", "request.md", "--by", "tester")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("governance hooks are not active", r.stderr)
+        self.assertFalse(S.active_id(self.tmp), "no workflow may have been created")
+
+    def test_L2_hook_writes_live_heartbeat(self):
+        # The real PreToolUse gate must write a fresh, well-formed heartbeat even
+        # when no workflow is active (this is what self-attests on the init call).
+        self.assertFalse((self.tmp / heartbeat.HEARTBEAT_REL).exists())
+        self.drive_hook()
+        live, why = heartbeat.status(self.tmp)
+        self.assertTrue(live, why)
+
+    def test_L3_init_allowed_when_hooks_live(self):
+        # Governed session: the gate fires on the init Bash call, then init sees a
+        # fresh heartbeat and proceeds. This is the end-to-end self-attestation.
+        self.drive_hook()
+        r = self.wf("init", "--request", "request.md", "--by", "tester")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(S.active_id(self.tmp))
+        self.assertEqual(json.loads(r.stdout)["state"], "RECEIVED")
+
+    def test_L4_init_refused_when_heartbeat_stale(self):
+        # A leftover heartbeat from an old governed session must not vouch forever.
+        self.write_heartbeat(age_sec=10000)
+        r = self.wf("init", "--request", "request.md", "--by", "tester")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("stale", r.stderr)
+        self.assertFalse(S.active_id(self.tmp))
+
+    def test_L5_bypass_env_allows_and_is_audited(self):
+        # The explicit escape hatch for legitimate non-Claude use: proceeds
+        # despite no heartbeat, but records the ungoverned start in the ledger.
+        r = self.wf("init", "--request", "request.md", "--by", "ci",
+                    env={"GMDW_ALLOW_UNGOVERNED_INIT": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        wid = json.loads(r.stdout)["workflow_id"]
+        log = (self.tmp / ".workflow" / "runs" / wid / "decision_log.jsonl") \
+            .read_text()
+        self.assertIn("governance_liveness_bypassed", log)
+
+    def test_L6_custom_freshness_window_env(self):
+        # The window is tunable; a heartbeat older than the override is stale.
+        self.write_heartbeat(age_sec=120)
+        r = self.wf("init", "--request", "request.md", "--by", "tester",
+                    env={"GMDW_HEARTBEAT_MAX_AGE_SEC": "60"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("stale", r.stderr)
+
+    def test_L7_future_dated_heartbeat_rejected(self):
+        # ADR-001 review F-1: a future-dated beacon must NOT be treated as fresh.
+        # Without an upper skew bound, `age<0 -> 0` made a single planted
+        # `ts: 2099-...` heartbeat vouch for liveness forever, defeating the
+        # bounded trust window. It must be rejected outright, and init must refuse.
+        self.write_heartbeat(age_sec=-10 * 365 * 24 * 3600)  # ~10 years ahead
+        live, why = heartbeat.status(self.tmp)
+        self.assertFalse(live, f"future-dated heartbeat must not be live: {why}")
+        self.assertIn("future", why)
+        r = self.wf("init", "--request", "request.md", "--by", "tester")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("governance hooks are not active", r.stderr)
+        self.assertFalse(S.active_id(self.tmp))
+
+    def test_L8_small_future_skew_tolerated(self):
+        # Benign same-machine clock jitter (within MAX_FUTURE_SKEW_SEC) is still
+        # accepted, so the fix does not introduce false refusals.
+        self.write_heartbeat(age_sec=-5)  # 5s ahead, inside the 60s skew window
+        live, why = heartbeat.status(self.tmp)
+        self.assertTrue(live, f"small forward skew should stay live: {why}")
 
 
 if __name__ == "__main__":

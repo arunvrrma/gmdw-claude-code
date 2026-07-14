@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gmdw import ledger, policy  # noqa: E402
+from gmdw import heartbeat, ledger, policy  # noqa: E402
 from gmdw import state as S      # noqa: E402
 from gmdw.state import GmdwError  # noqa: E402
 
@@ -50,6 +50,7 @@ _PROTECTED_PREFIXES = (
 _PROTECTED_EXACT = (
     ".claude/settings.json", ".workflow/config.json",
     ".workflow/index.json", ".workflow/ACTIVE",
+    ".workflow/.hooks_heartbeat",  # governance-liveness beacon; only hooks write it
 )
 _PROTECTED_BASENAMES = ("state.json", "decision_log.jsonl", "artifacts_index.json")
 
@@ -260,7 +261,8 @@ _MUTATION_TOKENS = ("rm ", "rm\t", "mv ", "cp ", "sed -i", "chmod",
 _PROTECTED_SUBSTRINGS = ("state.json", "decision_log.jsonl", "artifacts_index.json",
                          ".workflow/bin", ".workflow/schemas", ".workflow/policies",
                          ".workflow/ACTIVE", ".workflow/config.json",
-                         ".workflow/index.json", ".claude/hooks", ".claude/agents",
+                         ".workflow/index.json", ".workflow/.hooks_heartbeat",
+                         ".claude/hooks", ".claude/agents",
                          ".claude/settings", ".claude/commands")
 
 
@@ -304,6 +306,7 @@ def main():
         root = S.find_root(cwd)
     except GmdwError:
         allow()  # not a GMDW repo — nothing to govern
+    heartbeat.touch(root, "PreToolUse")  # attest the enforcement plane is live
     wid = S.active_id(root)
     tool = data.get("tool_name", "")
     ti = data.get("tool_input") or {}

@@ -2,4 +2,5 @@ __pycache__/
 *.pyc
 *.tmp
 .workflow/runs/*/artifacts/**/*.tmp
+.workflow/.hooks_heartbeat
 .pytest_cache/

@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gmdw import ledger  # noqa: E402
+from gmdw import heartbeat, ledger  # noqa: E402
 from gmdw import state as S  # noqa: E402
 from gmdw.state import GmdwError  # noqa: E402
 
@@ -114,6 +114,7 @@ def main():
         root = S.find_root(cwd)
     except GmdwError:
         sys.exit(0)
+    heartbeat.touch(root, "PostToolUse")  # attest the enforcement plane is live
     wid = S.active_id(root)
     if not wid:
         sys.exit(0)

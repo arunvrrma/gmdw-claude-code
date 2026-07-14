@@ -13,7 +13,7 @@ exists to resolve the open items.
 | R1 | Hook firing order (PostToolUse vs SubagentStop) differs from expectation | Counters/validation could act on a stale `open_invocation` | `open_invocation → last_invocation` handoff makes validation order-independent | LIVE V1 |
 | R2 | `tool_response` token fields differ from the parsed keys (`usage.input_tokens`, …) | Budget tracked by `len/4` estimate, not exact tokens | Estimate fallback flagged `estimated:true`; budget still enforced, just coarser | LIVE V2 |
 | R3 | Runtime does not pass `model` (or `subagent_type`) to the PreToolUse hook | Model-policy check silently no-ops; agent/state binding weakens | Gate treats missing `model` as "unspecified" (skips that one check); state/agent/header checks still fire | LIVE V3 |
-| R4 | `$CLAUDE_PROJECT_DIR` unset/incorrect for hook commands | Hooks don't run → **no governance** | Hooks fail closed only when reachable; if never invoked there is nothing to fail closed | LIVE V1 (pre-flight) |
+| R4 | `$CLAUDE_PROJECT_DIR` unset/incorrect for hook commands (or session project ≠ GMDW repo) | Hooks don't run → **no governance** | **Closed at entry (ADR-001 Phase 1):** the hooks write a liveness heartbeat on every firing and `wf init` refuses to start a workflow unless a fresh heartbeat proves the enforcement plane is live in this session (override: `GMDW_ALLOW_UNGOVERNED_INIT`, ledger-recorded). Mid-run hook loss is not yet caught — see Phase 2. | LIVE V1 (pre-flight); **confirmed live in `wf_20260713_001`**, now guarded — see §F (F1) |
 | R5 | Orchestrator cannot inject the `GMDW-INVOCATION` header into the subagent prompt | Every invocation denied (header missing) | Deny is safe (blocks work, never allows illegally) | LIVE V3 |
 
 ## B. Enforcement scope the design deliberately accepts
@@ -73,3 +73,17 @@ exists to resolve the open items.
 Parallel implementor fan-out; a workflow dashboard/UI; Postgres backend; CI-gated
 finalization beyond `require_ci_green` as a flag; automated threshold re-tuning from
 escalation history; multi-user approver routing beyond the config stub.
+
+## F. Confirmed in live operation (Workflow C — `wf_20260713_001`)
+
+Workflow C ran the **full** governed path against a *different* repository (`../external-admin`)
+than the GMDW project, from a session rooted in `external-workspace`. It converted two
+previously-forward-looking items into **observed** limitations. Neither is a defect against the
+approved architecture; both are boundaries of the current implementation, now witnessed live.
+The review controls exercised in the same run are recorded in
+[`VALIDATION_HISTORY.md`](VALIDATION_HISTORY.md).
+
+| ID | Limitation | Impact | Detection / recovery |
+|---|---|---|---|
+| F1 | **Cross-repo runs are governed by operator discipline, not runtime interception** (confirms R4). Because `$CLAUDE_PROJECT_DIR` did not resolve to the GMDW repo, `PreToolUse`/`SubagentStop` did not auto-fire; governance held only because the operator manually drove the same validators (`.workflow/bin/wf` + the `gmdw` hook modules) at each gate. | Enforcement degrades from runtime-enforced to operator-advisory; failure mode is **fail-open** (an omitted manual step passes ungoverned work silently). Outcome parity was achieved in `wf_20260713_001`, but by discipline, not enforcement. | **Now code-enforced at init (ADR-001 Phase 1):** `wf init` fails fast when the governance-hook heartbeat is absent/stale, converting the silent fail-open start into an explicit refusal. (The prior pre-flight `$CLAUDE_PROJECT_DIR` checklist control is now redundant at init.) Tracked: [#2](https://github.com/arunvrrma/gmdw-claude-code/issues/2) ([`issues/cross-repo-governance-hook-limitation.md`](issues/cross-repo-governance-hook-limitation.md)). |
+| F3 | **The plan-approval artifact records a single, immutable decision.** `artifacts/approvals/plan_approval.json` exposes exactly one slot, frozen on write. A `changes_requested → revise → approve` cycle cannot be represented: the first decision (defer M3) froze the slot, so the follow-up `approved` on the re-planned `plan_v2` could not be written and `PLAN_APPROVAL → IMPLEMENTING` was guard-blocked ("plan approval record required"). | A routine plan-iteration pattern is forced onto the **escalation** path (its sanctioned recovery), so legitimate re-approvals surface in `escalations[]`, diluting the audit signal of genuine escalations. All three reviewers and the human had approved `plan_v2` — a tooling limitation, not a governance disagreement. | Escalation override (as used in `wf_20260713_001`). Tracked: [#3](https://github.com/arunvrrma/gmdw-claude-code/issues/3) ([`issues/plan-approval-artifact-lifecycle-limitation.md`](issues/plan-approval-artifact-lifecycle-limitation.md)). |

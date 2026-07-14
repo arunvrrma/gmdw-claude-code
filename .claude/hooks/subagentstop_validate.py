@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gmdw import ledger, schemas  # noqa: E402
+from gmdw import heartbeat, ledger, schemas  # noqa: E402
 from gmdw import state as S       # noqa: E402
 from gmdw.state import GmdwError  # noqa: E402
 
@@ -184,6 +184,7 @@ def main():
         root = S.find_root(cwd)
     except GmdwError:
         ok()
+    heartbeat.touch(root, "SubagentStop")  # attest the enforcement plane is live
     wid = S.active_id(root)
     if not wid:
         ok()
