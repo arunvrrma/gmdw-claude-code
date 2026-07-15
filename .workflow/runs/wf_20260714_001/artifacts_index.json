@@ -1,0 +1,72 @@
+{
+  "artifacts/approvals/escalation_1.json": {
+    "bytes": 509,
+    "frozen": true,
+    "sha256": "9077d7951a8d998db562524144f2910e56dcab84d716b00192c9b0d09b1fd63e",
+    "state": "ESCALATED",
+    "ts": "2026-07-15T14:48:57Z"
+  },
+  "artifacts/classification_v1.json": {
+    "bytes": 2249,
+    "frozen": true,
+    "sha256": "49514de22de43722f451a2e665cf8c9b15d623f276c378a3df79028a28d8fc57",
+    "state": "CLASSIFYING",
+    "ts": "2026-07-14T12:02:28Z"
+  },
+  "artifacts/plan_review_v1.json": {
+    "bytes": 13993,
+    "frozen": true,
+    "sha256": "3ace6a0aee6bb13194327509a0a6b35e3bffae0ca42c1469338b6f02edd3be9e",
+    "state": "PLAN_REVIEW",
+    "ts": "2026-07-14T20:37:34Z"
+  },
+  "artifacts/plan_review_v2.json": {
+    "bytes": 14748,
+    "frozen": true,
+    "sha256": "c2226e09ee7b2b85e6e0c0d80a3a76f5cfc62b11f4c90971356a3e2ee25a3ac5",
+    "state": "PLAN_REVIEW",
+    "ts": "2026-07-14T20:52:53Z"
+  },
+  "artifacts/plan_review_v3.json": {
+    "bytes": 14774,
+    "frozen": true,
+    "sha256": "de97c39126bd1c777471abb1d3131e524531e688591fb0cb23b5f78ab8209725",
+    "state": "PLAN_REVIEW",
+    "ts": "2026-07-15T13:25:16Z"
+  },
+  "artifacts/plan_v1.json": {
+    "bytes": 29878,
+    "frozen": true,
+    "sha256": "633b07b210f3ee45809db2c6ef756421ca2a5fda1e32488e976bf4c9c9b20a3f",
+    "state": "PLANNING",
+    "ts": "2026-07-14T13:02:52Z"
+  },
+  "artifacts/plan_v2.json": {
+    "bytes": 40687,
+    "frozen": true,
+    "sha256": "995bc97481ee5f022a7c5e40f9da0648dccf95db5449053c5327935f68de9ea0",
+    "state": "PLANNING",
+    "ts": "2026-07-14T20:47:37Z"
+  },
+  "artifacts/plan_v3.json": {
+    "bytes": 54381,
+    "frozen": true,
+    "sha256": "fa6bdf38392da2877f1d0d504900d89435766590f2369e4135f0b19ea592b4be",
+    "state": "PLANNING",
+    "ts": "2026-07-15T13:18:16Z"
+  },
+  "artifacts/repo_analysis_v1.json": {
+    "bytes": 28227,
+    "frozen": true,
+    "sha256": "3e8c0f4f765a341e0b42998ae16b98000c609be6f24c52973081ed84feafb09f",
+    "state": "REPOSITORY_ANALYSIS",
+    "ts": "2026-07-14T12:17:14Z"
+  },
+  "artifacts/security_review_plan_v1.json": {
+    "bytes": 13864,
+    "frozen": true,
+    "sha256": "38c06b8db0df5bd215dcbeb1363304c82308d16f7ede3cb82296790e2f499c98",
+    "state": "PLAN_SECURITY_REVIEW",
+    "ts": "2026-07-14T21:02:37Z"
+  }
+}

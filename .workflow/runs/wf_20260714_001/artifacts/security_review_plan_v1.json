@@ -1,0 +1,91 @@
+{
+  "artifact_type": "security_review_plan",
+  "workflow_id": "wf_20260714_001",
+  "version": 1,
+  "produced_by": "security-reviewer",
+  "input_artifact_refs": [
+    ".workflow/runs/wf_20260714_001/artifacts/plan_v2.json",
+    ".workflow/runs/wf_20260714_001/artifacts/plan_review_v2.json",
+    ".workflow/runs/wf_20260714_001/artifacts/repo_analysis_v1.json",
+    "docs/adr/ADR-001-phase2-plan.md",
+    "docs/adr/ADR-001-phase1-implementation-review.md"
+  ],
+  "created_at": "2026-07-14T23:30:00Z",
+  "status": "complete",
+  "mode": "plan",
+  "subject_ref": ".workflow/runs/wf_20260714_001/artifacts/plan_v2.json",
+  "verdict": "revise",
+  "verdict_rationale": "Defensive assessment of plan_v2 (ADR-001 Phase 2) against the stated threat model: a misbehaving model (Orchestrator or subagent) holding Bash inside a governed session, plus operator error. GMDW's core guarantee is 'governance enforced by code, never by prompts.' The Item-1 extraction (M1), the mid-run transition liveness re-check (M4), preservation of the fail-closed wrapper, and the accept-only-expected-next-version / refuse-frozen / identical-core-validation controls on wf accept are all sound and preserve fail-closed posture; I verified the moved surfaces against the live code (the SubagentStop acceptance pipeline and its integrity-hold branch, state.py guard() single-flight at the open_invocation check, expected()'s next-version computation, the hook-sourced ledger allowlist, and heartbeat status()'s F-1 future-skew bound). One MAJOR finding blocks approval: plan_v2 leaves the two new Bash-callable authorities (wf accept, wf clear-invocation) guarded only by a trusted, model-suppliable --by string and the convention that the Orchestrator will not call them. I confirmed gate_bash denies none of them and that they carry no protected-substring+mutation token the existing rule would catch, so in a live governed session a misbehaving Orchestrator can write the expected artifact itself (the write gate permits exp.path and cannot see who writes it) and then run 'wf accept --by anything' to self-accept ANY artifact type -- including approving its own plan via a self-authored plan_review, or passing its own security review -- advancing the pointer and freezing, with the ledger mislabelling the event actor as human_recovery. Today self-acceptance is limited to ORCHESTRATOR_ARTIFACTS=('classification',) and every governed artifact type otherwise requires a real, gate-checked subagent invocation (header, model-pin, budget, single-flight); wf accept is a genuine privilege escalation past all of those. plan_v2 itself routes this to me (F5) as an OPTIONAL PreToolUse deny; for the stated adversary the --by/human_recovery attribution provides zero protection (no human is in the loop), so the deny must be REQUIRED, not optional. It is cheap and loses no legitimate function because both commands are hooks-dark recovery paths by design -- when hooks are live the legitimate acceptance/invocation path already works. This converts a prompt-level constraint into a code-level one, which is exactly the guarantee Phase 2 exists to uphold. Two MINOR findings (clear-invocation live-race / single-flight escape, subsumed by the same control; and the loose bypass truthiness where GMDW_ALLOW_UNGOVERNED=0 fails open) and two INFO items (extraction fidelity to verify at code review; the inherited shell=True test-rerun boundary now reachable from the CLI, not a new capability since the model already holds Bash) round out the assessment. No dependency, secret, or web-flow exposure is introduced. Verdict revise: a fixable material governance gap. With SF1 pulled into scope as a required code control (and SF2/SF3 addressed), this becomes approve.",
+  "checked": [
+    {
+      "area": "authn_authz",
+      "evidence": "Privilege boundary of the two new authorities. wf accept advances current[atype], bumps counters and freezes; wf clear-invocation releases the single-flight lock (state.py guard() open_invocation check). Confirmed gate_bash (pretooluse_gate.py) denies neither, and the write gate permits writing exp.path without an open_invocation, so the Orchestrator can self-author then self-accept. Today only ORCHESTRATOR_ARTIFACTS=('classification',) is orchestrator-acceptable; wf accept extends that to all types. --by is trusted, not verified; actor=human_recovery is a label the caller fabricates. See SF1, SF2."
+    },
+    {
+      "area": "other",
+      "evidence": "Governance-liveness controls. The mid-run transition liveness re-check (M4) uses the confirmed hook-sourced allowlist {invocation_requested, invocation_completed, invocation_failed} OR heartbeat.status(), correctly excluding artifact_accepted (CLI-written). heartbeat.status() carries the Phase-1 MAX_FUTURE_SKEW_SEC=60 bound so future-dated liveness cannot be forged unbounded. The bypass GMDW_ALLOW_UNGOVERNED/--allow-ungoverned is audited via governance_liveness_bypassed and is only meaningful once hooks are already dark; residual truthiness footgun in SF3."
+    },
+    {
+      "area": "input_handling",
+      "evidence": "The extracted accept core still parses artifact JSON, runs schema validation, a git merge-base ancestry subprocess, and a shell=True test-rerun of the artifact-declared tests.command (the moved _semantic). wf accept makes the shell=True rerun reachable from a CLI entry point. This is the same trust boundary the hook already crosses and is NOT a new capability for the Orchestrator, which already holds Bash. See SF5."
+    },
+    {
+      "area": "data_exposure",
+      "evidence": "New ledger events (invocation_cleared, transition_denied, governance_liveness_bypassed, artifact_accepted with actor=human_recovery) carry actor/by/summary fields only; no PII or secrets. clear-invocation nulls open_invocation in state.json but the invocation_requested ledger entry is retained, so no audit evidence is erased. No migrations widen exposure."
+    },
+    {
+      "area": "secrets",
+      "evidence": "No secrets committed, logged, or echoed. --by is an attribution string, not a credential; the bypass is an env-var read (no secret material). No new config secrets are introduced."
+    },
+    {
+      "area": "crypto",
+      "evidence": "Freeze integrity relies on the existing sha256 registry (ledger.freeze/register/verify); no hand-rolled primitives are introduced. No secret comparison is added, so constant-time comparison is not applicable. --by is not cryptographically verified (accepted residual)."
+    },
+    {
+      "area": "dependencies",
+      "evidence": "plan_v2 adds no third-party packages; new code lives in gmdw/accept.py, the wf CLI, and ledger.py using stdlib only. No lockfile or manifest change; nothing to typosquat."
+    }
+  ],
+  "findings": [
+    {
+      "id": "SF1",
+      "severity": "major",
+      "location": ".workflow/bin/wf (new cmd_accept, cmd_clear_invocation) and .claude/hooks/pretooluse_gate.py gate_bash; plan_v2 scope.out (optional PreToolUse deny), risks[2], assumptions",
+      "description": "wf accept and wf clear-invocation are new code-level, Bash-callable authorities more powerful than wf approve, and plan_v2 confines them only with a trusted --by string and the convention that the Orchestrator will not invoke them (an optional, not required, PreToolUse deny). gate_bash denies neither command, and the write gate permits writing exp.path without an open_invocation, so in a live governed session the acceptance authority is reachable from Bash outside the invocation lifecycle (GMDW-INVOCATION header, model-pin, budget, single-flight). This contradicts 'governance enforced by code, never by prompts' for the primary threat actor. The plan's own defense (identical core validation) does not help: a self-authored plan_review with verdict=approve and no findings is both schema-valid and semantically valid, so validity does not substitute for multi-agent independence.",
+      "exploit_scenario": "A misbehaving Orchestrator writes plan_v2.json (or a plan_review, security_review, or implementation) itself, then runs 'wf accept --by ci' via Bash, self-accepting and freezing the artifact and advancing state while the ledger records actor=human_recovery, with no subagent ever invoked.",
+      "remediation": "Pull the PreToolUse Bash deny of BOTH wf accept and wf clear-invocation while the heartbeat shows hooks live into required scope (not optional). Because both are hooks-dark recovery commands by design, denying them whenever the enforcement plane is live removes no legitimate function and makes the confinement code-enforced. Equivalently, gate them behind an explicit hooks-dark condition inside the CLI. Do not rely on --by or the human_recovery actor label as the control against a misbehaving model."
+    },
+    {
+      "id": "SF2",
+      "severity": "minor",
+      "location": ".workflow/bin/wf cmd_clear_invocation; plan_v2 milestone M3, AC6",
+      "description": "clear-invocation nulls open_invocation with no verification that the invocation is actually dead ('confirmed-dead' is a human/prompt judgement, not a code check). In a live session it can release the single-flight lock, letting a second concurrent invocation start; a still-running subagent's SubagentStop would then validate against the wrong (newer) open_invocation. The plan correctly does NOT reset consecutive_failures, so the two-failure escalation limit cannot be dodged this way.",
+      "exploit_scenario": "With one invocation open, a misbehaving Orchestrator runs 'wf clear-invocation --by x' then launches a second Agent invocation; the first subagent's SubagentStop later accepts or rejects against the second invocation's expected artifact, corrupting acceptance.",
+      "remediation": "The SF1 hooks-live PreToolUse deny also closes this race (the command becomes reachable only when hooks are dark, i.e. no live SubagentStop to race). Ensure the SF1 control's liveness keying is robust (hook-sourced ledger event OR fresh heartbeat) so a genuinely live run cannot clear its own in-flight lock; document that clear-invocation is only for an orphaned invocation with no running subagent."
+    },
+    {
+      "id": "SF3",
+      "severity": "minor",
+      "location": ".workflow/bin/wf cmd_transition and cmd_init bypass read; plan_v2 assumptions (truthiness out of scope)",
+      "description": "The mid-run bypass GMDW_ALLOW_UNGOVERNED reuses the loose truthiness read pattern, so GMDW_ALLOW_UNGOVERNED=0 (or =false) ACTIVATES the bypass -- the Phase-1 F-4 footgun carried forward to the more powerful mid-run gate. A stray or copy-pasted env assignment silently disables mid-run liveness enforcement. Audit logging (governance_liveness_bypassed) is adequate compensation for a DELIBERATE bypass, but not for an accidental fail-open.",
+      "exploit_scenario": "An operator (or a misbehaving model) exports GMDW_ALLOW_UNGOVERNED=0 intending to keep governance on, but the truthy non-empty string disables the mid-run liveness check for every transition in the session.",
+      "remediation": "Accept only an explicit affirmative ('1'/'true'/'yes', case-insensitive) for the mid-run bypass rather than any non-empty value, and confirm governance_liveness_bypassed is written on every bypassed transition. Hardening init's GMDW_ALLOW_UNGOVERNED_INIT similarly is optional."
+    },
+    {
+      "id": "SF4",
+      "severity": "info",
+      "location": ".claude/hooks/gmdw/accept.py and .claude/hooks/subagentstop_validate.py; plan_v2 M1, AC3, risks[1..2]",
+      "description": "The Item-1 extraction preserves fail-closed posture as planned (exception wrapper stays in the adapter; _semantic's integrity-hold save-and-log moved verbatim; test_R12 and test_13/13b as oracles). The residual is purely execution fidelity, to confirm at code review: the top-level try/except must wrap the accept_artifact call AND the adapter's own save/ok so any raise past the schema/semantic stage sets integrity_hold, and no core path may return outcome=accepted without having frozen the artifact. The plan-noted save-after-freeze reordering is benign (independent files; both orderings fail-closed on a freeze fault).",
+      "exploit_scenario": "If the extraction accidentally moved the freeze outside the exception-wrapped region, a freeze fault could leave the pointer advanced without a frozen hash or integrity_hold, i.e. a fail-open acceptance.",
+      "remediation": "At code-review (SECURITY_REVIEW mode) verify the wrapper boundary and the accepted-implies-frozen invariant directly against the diff; ensure test_R12 injects its fault strictly after the schema/semantic stage and inside main()'s body."
+    },
+    {
+      "id": "SF5",
+      "severity": "info",
+      "location": ".claude/hooks/gmdw/accept.py _semantic (shell=True test-rerun); plan_v2 risks[4], M2 (wf accept on stranded implementation)",
+      "description": "The moved _semantic still runs the artifact-declared tests.command with shell=True plus a git merge-base subprocess; wf accept makes the shell=True rerun reachable from the CLI in addition to the hook. This is the same already-accepted trust boundary and NOT a new capability for the Orchestrator, which already holds Bash and can run any command directly. Recorded because the SF1 control also stops this path being used to launder arbitrary shell execution as a 'governed test-rerun' while hooks are live.",
+      "exploit_scenario": "A misbehaving model authors an implementation manifest whose tests.command is an arbitrary shell command and triggers wf accept so the CLI runs it under shell=True -- but the same command is already runnable via the model's own Bash access, so no privilege is gained.",
+      "remediation": "No new mitigation required beyond SF1's hooks-live deny; keep the inherited shell=True boundary documented as a known, accepted surface rather than a new one."
+    }
+  ]
+}

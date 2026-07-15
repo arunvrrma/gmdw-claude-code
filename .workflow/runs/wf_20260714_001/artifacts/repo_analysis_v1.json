@@ -1,0 +1,167 @@
+{
+  "artifact_type": "repo_analysis",
+  "workflow_id": "wf_20260714_001",
+  "version": 1,
+  "produced_by": "repo-analyst",
+  "input_artifact_refs": [
+    ".workflow/runs/wf_20260714_001/request.md",
+    "docs/adr/ADR-001-phase2-plan.md",
+    "docs/adr/ADR-001-artifact-acceptance-and-hook-liveness.md",
+    "docs/adr/ADR-001-phase1-implementation-review.md"
+  ],
+  "created_at": "2026-07-14T12:04:27Z",
+  "status": "complete",
+  "stack": {
+    "languages": [
+      "Python 3"
+    ],
+    "frameworks": [],
+    "package_manager": "none (stdlib-only runtime and test suite; no requirements.txt/pyproject.toml present)"
+  },
+  "relevant_modules": [
+    {
+      "finding": ".claude/hooks/subagentstop_validate.py:main (lines 180-260) is the accept pipeline to extract. Verified order: (1) existence check on the expected artifact path (lines 211-214, calls _fail with event 'artifact_missing'); (2) JSON parse + schema validation via schemas.validate_artifact (lines 216-225, _fail 'artifact_invalid'); (3) blocked-status short-circuit reading artifact['status']=='blocked' (lines 228-234, clears open_invocation, logs 'artifact_blocked', calls block() directly, NOT _fail, so consecutive_failures is not bumped for a self-reported block); (4) semantic cross-checks via _semantic() (lines 236-239, _fail 'artifact_rejected' on any non-None return); (5) counter bumps for plan_revisions/impl_revisions/review_cycles plus the per-type review counter (lines 242-249); (6) accept: st['current'][atype]=version, reset consecutive_failures to 0, clear open_invocation, save_state, freeze_artifact, ledger.log('artifact_accepted', type, version, verdict) (lines 251-259).",
+      "evidence": ".claude/hooks/subagentstop_validate.py:180-260"
+    },
+    {
+      "finding": "_semantic(root, st, atype, version, artifact, run_rel) (lines 72-172) holds all type-specific semantic cross-checks and is pure/disk-scoped except two subprocess calls: a git merge-base ancestry check for implementation.base_commit (lines 124-132) and an optional test re-run via subprocess.run(cmd, shell=True, timeout=300) gated by verify['rerun_tests'] (lines 148-171). The test-rerun branch is the only place that mutates st['flags']['integrity_hold'] and calls S.save_state/ledger.log directly from inside _semantic instead of returning to the caller for a uniform decision -- this side-effecting-inside-a-pure-check pattern must be preserved or deliberately normalized during extraction.",
+      "evidence": ".claude/hooks/subagentstop_validate.py:72-172"
+    },
+    {
+      "finding": "_fail(root, wid, st, reason, event, **extra) (lines 45-57) is the rejection helper: bumps counters.consecutive_failures, deliberately RETAINS open_invocation (commented rationale: lets a corrected re-stop be re-validated instead of stranding a valid artifact -- this is the exact behavior test P6 pins), saves state, logs the given event to the ledger, then calls block(reason), which is hook-protocol presentation (prints a decision/reason JSON object and exits). block()/ok() (lines 34-42) are pure Claude-Code hook-protocol emitters and must stay in the thin adapter, not the core.",
+      "evidence": ".claude/hooks/subagentstop_validate.py:34-57"
+    },
+    {
+      "finding": "Invocation resolution (open_invocation, falling back to last_invocation) is hook-protocol/session-plane logic that must stay in the adapter per the Phase 2 plan: lines 200-206 select inv = st.get('open_invocation') or st.get('last_invocation'); the comment documents WHY open_invocation must be preferred (last_invocation is a stale record on the 2nd+ invocation, which test P5 exists specifically to pin) and if neither is present or the expected type/version is missing, main() exits early via ok() (an untracked invocation is not validated).",
+      "evidence": ".claude/hooks/subagentstop_validate.py:193-206"
+    },
+    {
+      "finding": "The top-level exception wrapper (lines 264-282) is hook-protocol fail-closed behavior distinct from the accept pipeline: any uncaught exception from main() sets flags['integrity_hold']=True, logs a 'validator_error' ledger event, and blocks with a message naming the error type -- this must remain in .claude/hooks/subagentstop_validate.py (or be duplicated identically in any new adapter/CLI caller of the extracted core) since it is the last line of defense against a broken accept implementation.",
+      "evidence": ".claude/hooks/subagentstop_validate.py:263-282"
+    },
+    {
+      "finding": "_subject_matches(review, atype, version) is duplicated verbatim in two files with identical 6-line bodies: .claude/hooks/subagentstop_validate.py defines a copy, and .claude/hooks/gmdw/state.json's copy is actively used by guard() at PLAN_REVIEW/PLAN_SECURITY_REVIEW/SECURITY_REVIEW/CODE_REVIEW to check a loaded review artifact's subject_ref matches the current plan/implementation version before a transition is permitted.",
+      "evidence": ".claude/hooks/subagentstop_validate.py:64-69 duplicates .claude/hooks/gmdw/state.py:227-232"
+    },
+    {
+      "finding": "subagentstop_validate.py's _subject_matches (lines 64-69) is defined but not called anywhere else in that same file -- a targeted search inside subagentstop_validate.py matches only the def line itself; state.py's copy IS actively called (4 call sites: lines 311, 337, 379, 395). One copy is effectively unreferenced dead code in its current home; consolidating removes that dead copy rather than reconciling two live call sites.",
+      "evidence": ".claude/hooks/subagentstop_validate.py:64-69 (unused); .claude/hooks/gmdw/state.py:311,337,379,395 (used)"
+    },
+    {
+      "finding": "state.py's transition(root, to, trigger, actor, reason, detail) (lines 491-522) is the mutation entry point the wf CLI's cmd_transition calls. It (a) loads state, (b) calls _accept_orchestrator_artifacts() to accept any pending orchestrator-written artifact (today only 'classification') before guarding, since the guard reads st['current'] (lines 494-497), (c) checks the transition table TRANSITIONS[frm] (line 499), (d) calls guard(root, st, to) (line 501) and raises GmdwError on rejection, (e) on success syncs routing/flags from classification when leaving CLASSIFYING/REPOSITORY_ANALYSIS (lines 505-506), (f) mutates st['state'], appends history, appends an escalation record when the target is ESCALATED, saves state, and logs a 'transition' ledger event (lines 508-521). A liveness re-check per the Phase 2 plan would sit either inside transition() near the top (after load_state, before _accept_orchestrator_artifacts) or in cmd_transition before calling S.transition -- both are consistent with existing structure; .claude/hooks/gmdw/state.py currently has no import of the heartbeat module.",
+      "evidence": ".claude/hooks/gmdw/state.py:491-522"
+    },
+    {
+      "finding": "guard(root, st, to) (lines 245-443) is pure precondition-checking over already-accepted state/artifacts; none of its 'global rules' block (lines 251-259, checking open_invocation / integrity_hold / ESCALATED / FAILED-REJECTED-from-non-ESCALATED) references heartbeat or ledger events -- a liveness re-check is not part of guard() today and would be a new precondition, most naturally placed in transition() or cmd_transition rather than inside guard() (guard()'s docstring states it assumes 'to' is already in the transition table, i.e. it is strictly precondition logic over accepted state, not environment/session logic).",
+      "evidence": ".claude/hooks/gmdw/state.py:245-259"
+    },
+    {
+      "finding": "wf CLI's cmd_transition(a) (lines 132-148) is a thin wrapper: calls S.transition(...), and on GmdwError logs a 'transition_denied' ledger event (with the from/to state and the reason) before dying with the CLI error -- this denial-logging pattern (log the attempt even on failure) is the template a liveness-refusal message would need to follow so blocked mid-run transitions leave an audit trail. Unlike wf init refusals (which leave no durable trace since no run dir exists yet), a workflow and its run dir already exist by the time wf transition is called, so a mid-run refusal CAN be ledger-logged the same way transition_denied already is.",
+      "evidence": ".workflow/bin/wf:132-148"
+    },
+    {
+      "finding": "heartbeat.status(root) (.claude/hooks/gmdw/heartbeat.py:101-126) returns (live: bool, reason: str) and is the exact function cmd_init already calls (.workflow/bin/wf:65). It is directly reusable for a transition-time check with no signature changes. Its freshness predicate is wall-clock only (heartbeat file .workflow/.hooks_heartbeat, JSON {ts, event, pid}, freshness window DEFAULT_MAX_AGE_SEC=300s, env-tunable via GMDW_HEARTBEAT_MAX_AGE_SEC), plus the future-skew bound MAX_FUTURE_SKEW_SEC=60s (fixed, not env-tunable) that rejects timestamps more than 60s in the future as not-live (lines 47-52, 114-119). The Phase 2 plan explicitly says wall-clock alone is fragile mid-run and prefers a ledger-event-since-last-transition predicate, falling back to heartbeat freshness.",
+      "evidence": ".claude/hooks/gmdw/heartbeat.py:52,65,101-126"
+    },
+    {
+      "finding": "ledger.log(root, wf_id, event, **fields) (.claude/hooks/gmdw/ledger.py:28-35) appends one JSON object per line to decision_log.jsonl with at minimum {ts, event} plus caller-supplied fields; there is no read-side helper in ledger.py today (no function to load/filter decision_log.jsonl by event type or by time-since-last-X) -- a 'hook-sourced ledger event since the workflow's last transition' predicate needs new read logic (either in ledger.py or the new liveness/accept module), since ledger.py currently only writes (log/register/freeze) and verifies artifact hashes (verify), never reads the JSONL event stream back.",
+      "evidence": ".claude/hooks/gmdw/ledger.py:28-35 (write-only; no JSONL read/query helper exists today)"
+    },
+    {
+      "finding": "The vocabulary of ledger events observed in this pass's reads: PreToolUse writes 'invocation_requested'; SubagentStop writes 'artifact_accepted', 'artifact_blocked', 'artifact_missing', 'artifact_invalid', an _fail-driven 'artifact_rejected'-equivalent event, 'integrity_violation', 'verification', 'validator_error'; state.py's _accept_orchestrator_artifacts writes 'artifact_accepted' with actor='orchestrator'; the wf CLI (non-hook, CLI-driven) writes 'workflow_created', 'transition', 'transition_denied', 'human_approval', 'workflow_closed', 'governance_liveness_bypassed'. posttooluse_ledger.py's own ledger.log call sites were not individually enumerated in this pass (only its heartbeat.touch call site was located) -- flagged under unverified. decision_log entries carry no structural field distinguishing 'hook-sourced' from 'CLI-sourced' events today; a predicate distinguishing them would need a naming convention or explicit allowlist over event names.",
+      "evidence": ".claude/hooks/pretooluse_gate.py:183; .claude/hooks/subagentstop_validate.py:55-56,163-165,169-171,231-232,258-259,276-277; .claude/hooks/gmdw/state.py:484-486,519-521; .workflow/bin/wf:84,141,212-213,263"
+    },
+    {
+      "finding": "GMDW_ALLOW_UNGOVERNED_INIT is implemented entirely inside wf's cmd_init (.workflow/bin/wf:65-86): read via os.environ.get (truthiness-only check, no value validation), and if the heartbeat is not live but the bypass var is set, S.create_workflow proceeds anyway and a 'governance_liveness_bypassed' ledger event is logged with {reason, by} immediately after workflow creation (lines 83-86) -- this bypass-then-log-into-the-new-run's-ledger pattern is the template a transition-time bypass must follow, except a transition-time bypass has an existing run/ledger to log into already, unlike init where the run does not exist until after the bypass decision.",
+      "evidence": ".workflow/bin/wf:65-86"
+    },
+    {
+      "finding": "No code today implements a bare GMDW_ALLOW_UNGOVERNED env var (only GMDW_ALLOW_UNGOVERNED_INIT exists, in the wf CLI, the heartbeat module's neighborhood, tests, and docs). Both the Phase 2 plan document and the Phase 1 implementation review (finding F-8) flag the naming mismatch as unresolved and explicitly deferred to Phase 2. Confirmed by a repository-wide search for GMDW_ALLOW_UNGOVERNED (excluding run-history directories): only the _INIT-suffixed name appears in code/tests; the bare name appears only in the two ADR documents.",
+      "evidence": "docs/adr/ADR-001-phase2-plan.md:69; docs/adr/ADR-001-phase1-implementation-review.md:167-169"
+    },
+    {
+      "finding": "cmd_approve(a) (.workflow/bin/wf:150-214) is the structural template named for wf accept: resolves (wf_id, st) via S.load_state, computes a target relpath under artifacts/approvals/, computes the next version by counting existing approvals of the same gate, builds an envelope+body dict, validates it with schemas.validate_artifact, refuses if the target file already exists (immutability check at line 198-199, a plain existence check since approval artifacts are written directly by this command rather than a hook), writes it atomically, freezes it via S.freeze_artifact, appends a record to st['approvals'] (or st['escalations']), saves state, and logs a 'human_approval' ledger event carrying by/decision/resolution/artifact. Every one of cmd_approve's arguments requires --by (argparse required=True at line 308); no other subcommand today has a required=True --by.",
+      "evidence": ".workflow/bin/wf:150-214,308"
+    },
+    {
+      "finding": "S.expected(root, st) (.claude/hooks/gmdw/state.py:175-195) names exactly what wf accept must restrict itself to: it reads ARTIFACT_FOR_STATE[st['state']] for the artifact type, computes version = st['current'].get(atype,0)+1 (i.e. always the NEXT version, never an already-accepted one), and returns a dict with state/artifact_type/envelope_type/version/path/agent/model/effort/schema. If st['state'] has no entry in ARTIFACT_FOR_STATE (e.g. RECEIVED, PLAN_APPROVAL, APPROVED, ESCALATED, terminal states), expected() returns None -- wf accept has nothing to accept in those states and must refuse cleanly.",
+      "evidence": ".claude/hooks/gmdw/state.py:175-195,63-72"
+    },
+    {
+      "finding": "S.workflow_dir(root, wf_id) and S.artifact_relpath(atype, version) (.claude/hooks/gmdw/state.py:113-114,151-155) are the addressing primitives cmd_approve and subagentstop_validate.py both already use to resolve an artifact's on-disk path; wf accept would use S.expected()['path'] (already repo-relative) combined with S.workflow_dir for the full filesystem path, mirroring subagentstop_validate.py's own pattern (run_rel = S.artifact_relpath(...); full = S.workflow_dir(...) joined with run_rel, lines 208-209).",
+      "evidence": ".claude/hooks/gmdw/state.py:113-114,151-155; .claude/hooks/subagentstop_validate.py:208-209"
+    },
+    {
+      "finding": "S.freeze_artifact(root, wf_id, run_rel, state_name) (.claude/hooks/gmdw/state.py:198-206) is the single freeze primitive both the accept pipeline and cmd_approve/_accept_orchestrator_artifacts call: it calls ledger.freeze (records sha256 + frozen flag in artifacts_index.json) then removes the write permission bits from the file, tolerating an OS-level failure (comment: registry hash remains the authoritative tamper check). Any new accept core module or wf accept command should call this same function rather than reimplementing freezing.",
+      "evidence": ".claude/hooks/gmdw/state.py:198-206"
+    }
+  ],
+  "conventions": [
+    {
+      "finding": "Every hook's main() begins by resolving root via S.find_root(cwd), immediately calling heartbeat.touch(root, '<HookName>') before any decision logic (unconditional, best-effort, never raises), then checking S.active_id(root) and returning early if no workflow is active. This 'touch first, decide second' order is load-bearing for the liveness design and is identical across all three hooks (confirmed call sites in all three).",
+      "evidence": ".claude/hooks/pretooluse_gate.py:301-310; .claude/hooks/subagentstop_validate.py:183-190; .claude/hooks/posttooluse_ledger.py:117"
+    },
+    {
+      "finding": "All state.json writes go through S.save_state which calls S.atomic_write_json (tmp file + atomic rename), never a direct write; all artifact freezing goes through S.freeze_artifact. Any new core accept module should reuse these rather than reimplementing file I/O.",
+      "evidence": ".claude/hooks/gmdw/state.py:125-144,198-206"
+    },
+    {
+      "finding": "Every governance-relevant state mutation is paired with a ledger.log call carrying an event name plus structured fields (never free-text-only); event names are lowercase_snake_case nouns/verb phrases ('artifact_accepted', 'artifact_missing', 'transition_denied', 'governance_liveness_bypassed', 'validator_error'). A new 'human_recovery' actor value and any new liveness-bypass event should follow this naming convention.",
+      "evidence": ".claude/hooks/gmdw/ledger.py:28-35; .claude/hooks/subagentstop_validate.py:55-56,231-232,258-259; .workflow/bin/wf:84,141,212-213"
+    },
+    {
+      "finding": "Errors that represent governance rule violations are raised as GmdwError (a plain Exception subclass defined once in .claude/hooks/gmdw/state.py:18-19) and caught at the CLI boundary (wf's cmd_transition, lines 134-145) or at the hook boundary (subagentstop_validate.py's top-level broad exception handler at line 268 -- note this does not special-case GmdwError specifically; GmdwError is only explicitly caught earlier, at main()'s find_root call, line 185). A GmdwError raised deeper inside the accept flow today would fall through to the generic fail-closed handler and set integrity_hold rather than being treated as an ordinary rejection.",
+      "evidence": ".claude/hooks/gmdw/state.py:18-19; .claude/hooks/subagentstop_validate.py:183-186,263-282; .workflow/bin/wf:39-41,134-145"
+    },
+    {
+      "finding": "argparse subcommands that require human attribution use --by as a required=True argument with no default; today only 'approve' does this (.workflow/bin/wf:308). init's --by defaults to the OS user and is not required, since init's --by is not a compensating-control attribution in the same sense that approve's is.",
+      "evidence": ".workflow/bin/wf:277,308"
+    },
+    {
+      "finding": "Module docstrings and inline comments throughout .claude/hooks/gmdw/*.py and the hook scripts consistently explain WHY a branch exists, often citing the regression it guards in prose (e.g. subagentstop_validate.py:48-53 explaining why open_invocation is retained on rejection; state.py:494-496 explaining why orchestrator-artifact acceptance runs before guarding). This convention should be preserved in any extracted/new code.",
+      "evidence": ".claude/hooks/subagentstop_validate.py:48-53; .claude/hooks/gmdw/state.py:494-496"
+    }
+  ],
+  "test_infrastructure": {
+    "test_command": "python3 tests/test_governance.py (stdlib unittest runner; CLAUDE.md also documents 'python3 -m pytest tests/ -q' but pytest is NOT installed in this environment -- verified in this pass: invoking pytest fails with a module-not-found error)",
+    "layout": "Single file tests/test_governance.py (729 lines, 34 test methods across 6 classes: Base (fixture/driver base, not itself a test class), TestWriteScope, TestLimits, TestArtifacts, TestSecurityAndDeploy, TestLegalPath, TestGovernanceLiveness). No conftest, no pytest configuration file, no separate unit-test tier -- every test drives real subprocesses end to end.",
+    "notes": "Base.setUp (lines 36-57) builds a throwaway repo per test in a fresh temp directory: copies .claude/ wholesale, copies .workflow/schemas, .workflow/policies, and .workflow/bin, creates an empty .workflow/runs/ dir and empty index file, marks the wf entry point executable, git-inits a one-commit seed repo (README + src/app.py), then calls S.create_workflow(...) DIRECTLY as a Python function call rather than via a 'wf init' subprocess -- this bypasses cmd_init's heartbeat/liveness preflight entirely (create_workflow itself has no liveness check; only cmd_init does), so Base.setUp today produces workflows with NO heartbeat file present in the throwaway repo. Verified in this pass: running the suite reports all 34 tests passing with zero heartbeat seeding anywhere in Base. Per the Phase 2 plan, existing self.wf('transition', ...) call sites in TestLimits/TestArtifacts/TestSecurityAndDeploy fire no hooks and would fail a naive mid-run liveness check unless Base.setUp seeds a fresh heartbeat file, which is the plan's prescribed fix (representing these as 'a governed session'). Base also exposes .hook(script, payload) (subprocess-drives the real hook scripts with the tool's expected stdin JSON shape) and .wf(*args) (subprocess-drives the real wf CLI binary) -- both are the actual production hook/CLI code, not mocks or stubs. TestGovernanceLiveness (lines 608-726) is a SEPARATE unittest.TestCase (not a Base subclass) with its own setUp building a repo skeleton with no ACTIVE workflow and no seeded state, specifically to exercise 'wf init' from a cold, hookless start; it defines its own .wf()/.drive_hook()/.write_heartbeat(age_sec) helpers and 8 tests (L1 through L8) covering: refuse-when-hookless, hook-writes-live-heartbeat, allow-when-live (the self-attestation round trip), refuse-when-stale, bypass-env-allowed-and-audited, custom-freshness-window-env, future-dated-heartbeat-rejected (the F-1 regression test), and small-future-skew-tolerated."
+  },
+  "security_surfaces": [
+    {
+      "finding": "pretooluse_gate.py's gate_write (lines 192-251) and gate_bash (lines 269-291) both short-circuit with an unconditional 'no active workflow -> allow' check (write: lines 199-200; bash: line 271) BEFORE the protected-path check (the protected-path test at line 202 for write; the protected-substring scan at lines 273-276 for bash). This structurally confirms the Phase 1 implementation review's finding F-2: .workflow/.hooks_heartbeat (listed in the write gate's exact-match protected list at line 53 and the bash gate's protected-substring list at line 264) is only write-protected while a workflow is ACTIVE; with no ACTIVE workflow, any tool call can freely overwrite the heartbeat file, including planting a future-dated timestamp before ever starting a workflow.",
+      "evidence": ".claude/hooks/pretooluse_gate.py:50-58,192-202,264,269-277"
+    },
+    {
+      "finding": "heartbeat.py's future-skew bound (MAX_FUTURE_SKEW_SEC=60, deliberately not env-tunable per its own comment) closes the Phase 1 review's F-1 finding (a future-dated far-future heartbeat used to be treated as fresh forever via an unguarded negative-age clamp). Test L7 exercises this exact scenario end-to-end (a heartbeat roughly a decade in the future causes status() to report not-live, and 'wf init' refuses) and passes in this pass's suite run, confirming F-1 is already fixed in the code checked out for this workflow -- the review document itself is dated one day before this analysis and still lists F-1 as an open 'must fix before merge' item, so the fix landed after that document was written.",
+      "evidence": ".claude/hooks/gmdw/heartbeat.py:47-52,113-119; tests/test_governance.py:706-718"
+    },
+    {
+      "finding": "The bare-truthiness bypass pattern flagged as low-severity F-4 in the Phase 1 review is confirmed still present in cmd_init: the bypass variable is read via a plain environment lookup and checked only for Python truthiness (.workflow/bin/wf:66-67) -- any non-empty string including the literal characters for zero or false satisfies the check, i.e. still bypasses. Relevant to Phase 2 if a parallel transition-time bypass variable is introduced using the same pattern.",
+      "evidence": ".workflow/bin/wf:66-67"
+    },
+    {
+      "finding": "The implementation semantic check shells out with subprocess.run(cmd, cwd=root, shell=True, capture_output=True, timeout=300) using the artifact-declared test command string verbatim (_semantic, lines 152-154) -- an existing, accepted trust boundary (the command comes from the implementor-produced manifest and is run inside the accept pipeline specifically to catch a false 'tests pass' claim). Any new caller of the extracted accept core (wf accept) will inherit this same shell=True execution when a human runs it against a stranded artifact, since it runs the identical pipeline per the Phase 2 plan.",
+      "evidence": ".claude/hooks/subagentstop_validate.py:147-171"
+    },
+    {
+      "finding": "The git ancestry check for implementation.base_commit uses subprocess.run(['git','merge-base','--is-ancestor', base, 'HEAD'], cwd=root, ...) with base coming directly from the artifact (_semantic, lines 124-132); base is passed as a literal argv element (not through a shell), so it is not directly shell-injectable, but an arbitrary or malformed base string is passed to git without prior validation beyond git's own argument parsing.",
+      "evidence": ".claude/hooks/subagentstop_validate.py:123-132"
+    }
+  ],
+  "constraints": [
+    "No schema changes permitted (per request.md and the Phase 2 plan document); .workflow/schemas/*.schema.json files must remain untouched for this workflow.",
+    "No state.json shape changes except a test-only heartbeat seed in tests/test_governance.py's Base.setUp (per request.md item 2 and the Phase 2 plan's 'Sequencing & migration' section).",
+    "All 34 existing tests (26 legacy + 8 TestGovernanceLiveness, all currently passing per this pass's run) must remain green through the refactor; item 1 (accept-pipeline extraction) must land as a pure, behavior-preserving refactor before item 3 (wf accept) is added on top, per the plan's explicit sequencing and the ADR's code-motion regression-risk note.",
+    "The bypass env-var naming must be reconciled: GMDW_ALLOW_UNGOVERNED_INIT exists today (init-only); the Phase 2 plan names GMDW_ALLOW_UNGOVERNED for transitions (finding F-8) -- no code currently implements the bare name.",
+    "Any new liveness predicate must carry forward the F-1 future-clock-skew bound (MAX_FUTURE_SKEW_SEC=60, .claude/hooks/gmdw/heartbeat.py:52) rather than reintroducing an unbounded negative-age clamp.",
+    "Out of scope for this workflow per request.md: run-ID recycling on pruned run directories; the doc drift between the git-strategy and live-validation documents; the trivial-route human-gate question."
+  ],
+  "unverified": [
+    "posttooluse_ledger.py was only located for its heartbeat.touch() call site (line 117); its full body and its own ledger.log call sites (exact event names it logs for invocation completion/failure) were not read line-by-line in this pass, so the precise event names used elsewhere in this report for that hook are inferred from the incident-analysis ADR's evidence table, not independently confirmed against posttooluse_ledger.py's source.",
+    "Whether decision_log entries can be reliably distinguished as hook-sourced vs CLI-sourced by event name alone (needed for the Phase 2 mid-run liveness predicate) was not fully resolved: no structural 'source plane' field exists on ledger entries today, and the full event vocabulary of posttooluse_ledger.py (see previous item) was not enumerated to build a definitive allowlist.",
+    "Whether pytest's absence from this environment is intentional versus simply not installed was not determined; CLAUDE.md documents both invocation forms as valid, but only the stdlib unittest form was runnable in this pass.",
+    "docs/KNOWN_LIMITATIONS.md and .claude/commands/gmdw.md were only inspected via targeted keyword search for items relevant to request items 5 and 6 (the R4/F1 wording, and wf approve / wf accept mentions), not read end-to-end; other sections potentially relevant to Phase 2 doc updates were not reviewed.",
+    "Whether any file elsewhere in the repository (outside .claude/hooks/gmdw/state.py and .claude/hooks/subagentstop_validate.py) contains a further copy of _subject_matches or _semantic-equivalent logic was checked only via a targeted search for 'subject_matches' during this pass, confined to the .claude/hooks tree; no full-repository semantic-duplication sweep beyond these two known files was performed."
+  ]
+}

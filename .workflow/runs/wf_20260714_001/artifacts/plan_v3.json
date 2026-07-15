@@ -1,0 +1,318 @@
+{
+  "artifact_type": "plan",
+  "workflow_id": "wf_20260714_001",
+  "version": 3,
+  "produced_by": "planner",
+  "input_artifact_refs": [
+    ".workflow/runs/wf_20260714_001/request.md",
+    ".workflow/runs/wf_20260714_001/artifacts/plan_v2.json",
+    ".workflow/runs/wf_20260714_001/artifacts/security_review_plan_v1.json",
+    ".workflow/runs/wf_20260714_001/artifacts/plan_review_v2.json",
+    ".workflow/runs/wf_20260714_001/artifacts/repo_analysis_v1.json",
+    "docs/adr/ADR-001-phase2-plan.md",
+    "docs/adr/ADR-001-artifact-acceptance-and-hook-liveness.md"
+  ],
+  "created_at": "2026-07-15T13:00:00Z",
+  "status": "complete",
+  "objective": "Implement ADR-001 Phase 2: finish moving artifact-acceptance authority into the repository-scoped workflow core; extend governance-hook liveness enforcement from init to mid-run transitions; introduce two human-gated, in-governance recovery paths ('wf accept' for a schema-valid but unaccepted stranded artifact, and 'wf clear-invocation' for an orphaned open_invocation that otherwise deadlocks every transition including ESCALATED); AND, resolving Security finding SF1, make the confinement of those two new Bash-callable authorities code-enforced by a REQUIRED PreToolUse gate deny of 'wf accept' and 'wf clear-invocation' whenever a workflow is active, so the guarantee 'governance enforced by code, never by prompts' holds for the new authorities. No JSON Schema changes and no state-shape changes beyond a test-only heartbeat seed; all 34 existing governance tests stay green and 13 new regression tests are introduced (one more than plan_v2, the SF1 gate-deny test), for a final suite of 47 tests.",
+  "scope": {
+    "in": [
+      "Item 1: extract the accept pipeline (existence, then schema, then blocked-status, then semantic cross-checks, then counter bumps, then current-pointer update, then freeze, then ledger) out of the SubagentStop validator hook into a new pure core module gmdw/accept.py, leaving the SubagentStop validator a thin adapter. Behavior-preserving.",
+      "Item 1: delete the dead duplicate _subject_matches from the SubagentStop validator (the live copy in the gmdw state module, used by guard(), is the single remaining home); do NOT copy it into accept.py (the accept pipeline never calls it).",
+      "Item 3: introduce a human-gated 'wf accept --by <human>' recovery subcommand in the wf CLI, modeled on cmd_approve, reusing the item-1 core pipeline; it recovers a stranded ARTIFACT.",
+      "Item 3 (F1 recovery): introduce a human-gated 'wf clear-invocation --by <human>' recovery subcommand in the wf CLI that releases a confirmed-dead open_invocation, logs a distinct 'invocation_cleared' ledger event with actor 'human_recovery', and refuses cleanly when there is no open_invocation; it recovers an orphaned INVOCATION so ESCALATED / FAILED / REJECTED and normal transitions become reachable again.",
+      "Item 2: introduce a transition-time liveness re-check in the wf CLI cmd_transition, with a new hook-sourced-ledger-event read helper in the gmdw ledger module and a heartbeat-freshness fallback.",
+      "Item 2: reconcile the bypass env-var naming by introducing GMDW_ALLOW_UNGOVERNED as the canonical bypass honored by both init and transition, keeping GMDW_ALLOW_UNGOVERNED_INIT working at init for backward compatibility.",
+      "Item 6 (SF1, REQUIRED security control): insert a rule into gate_bash in the PreToolUse gate (.claude/hooks/pretooluse_gate.py) that DENIES any Bash command whose text invokes 'wf accept' or 'wf clear-invocation' whenever a workflow is active, pattern-matched like the existing git-push / git-commit rules. This converts the confinement of the two new authorities from a prompt-level convention into a code-level guarantee.",
+      "Item 6 (SF3, security hardening): read the new canonical GMDW_ALLOW_UNGOVERNED bypass with a hardened affirmative check that accepts ONLY an explicit member of {'1','true','yes','on'} (case-insensitive), at BOTH transition and init, so GMDW_ALLOW_UNGOVERNED=0 or =false fails CLOSED. The legacy GMDW_ALLOW_UNGOVERNED_INIT keeps its existing loose truthiness (Phase-1 F-4 stays out of scope) so shipped init behavior is unchanged.",
+      "Item 4: introduce Phase-2 regression tests (wf accept happy and negative paths, wf clear-invocation recovery and negative paths, the SF1 gate-deny of both recovery commands while active, mid-run transition refusal and audited bypass including the SF3 fail-closed assertion, and a fail-closed validator-wrapper test), seed a fresh heartbeat in the test-suite Base.setUp so existing transition tests represent a governed session, and keep the full suite green through the thin hook.",
+      "Item 5: update docs (KNOWN_LIMITATIONS R4/F1, the gmdw command doc) and set the two ADR-001 document statuses to Accepted / Implemented, stating precisely what is closed."
+    ],
+    "out": [
+      "No JSON Schema changes: the nine schema files under the workflow schemas directory remain untouched.",
+      "No state-shape changes except the test-only heartbeat seed in Base.setUp; the transition table is unchanged.",
+      "Reordering guard()'s ESCALATED allowance ahead of its open_invocation check (a state-core change) is NOT taken. The narrower, lower-risk reading is chosen: the orphaned-invocation deadlock is resolved by the human-gated 'wf clear-invocation' CLI recovery, leaving guard()'s single-flight ordering intact for normal transitions. The human plan gate may prefer the guard reorder instead; it is recorded here as the excluded alternative.",
+      "Hardening the LEGACY GMDW_ALLOW_UNGOVERNED_INIT loose truthiness (Phase-1 F-4) is intentionally OUT of scope: only the new canonical GMDW_ALLOW_UNGOVERNED is hardened (SF3). Keeping F-4 deferred avoids altering shipped Phase-1 init behavior; it is recorded as the excluded change.",
+      "Run-ID recycling on pruned run directories (deferred by the request and ADR).",
+      "The GIT_STRATEGY versus LIVE_VALIDATION documentation drift about committing run folders (deferred).",
+      "The trivial-route human-gate question independent of hook liveness (deferred).",
+      "Phase-1 advisory findings other than the ones the request pulls in: F-2, F-3, F-5, F-6, F-7 are NOT handled here. Only F-1 (future-skew bound, already fixed and carried forward), F-8 (bypass naming reconciliation), and the SF3 hardening of the new canonical name are in scope; F-4 (loose truthiness of the legacy init var) remains deferred as stated.",
+      "A general in-governance 'wf extend-deadline' recovery command is NOT introduced here; the wall-clock deadline extension needed this session was carried out by a hooks-dark raw edit. It is recorded in assumptions/risks as a related future recovery-command gap, not implemented, to keep scope to the request plus the SF1/SF3 security fixes."
+    ]
+  },
+  "milestones": [
+    {
+      "id": "M1",
+      "description": "Extract the accept pipeline into a new pure core module gmdw/accept.py and reduce the SubagentStop validator hook to a thin adapter. Core entry point contract: accept_artifact(root, st, atype, version, *, actor=None) returns a Result object carrying outcome in {accepted, rejected, blocked, integrity_hold}, a reason string, a ledger event name for the failure cases (artifact_missing / artifact_invalid / artifact_rejected), and an extra dict (e.g. path, errors). NOTE (F4): there is NO rerun_tests parameter; _semantic continues to read verify.rerun_tests from st internally (prof = st policy snapshot; verify = prof verification), exactly as today. WHAT MOVES INTO CORE: the existence check, JSON parse and schemas.validate_artifact, blocked-status detection, the full _semantic() function (including its two subprocess calls: git merge-base ancestry and the shell test-rerun) moved VERBATIM, and the acceptance-plane mutations and side effects (the plan_revisions / impl_revisions / review_cycles and per-review counter bumps, setting st current[atype]=version, the freeze that marks the artifact read-only and records its sha256 in the registry, and the 'artifact_accepted' ledger event which includes an actor field only when a non-None actor is supplied so the hook path stays byte-identical). CORE SAVE CONTRACT (F4, be precise): the core does NOT call S.save_state and emits no block/ok, with exactly ONE intentional exception: _semantic's integrity-hold branch (today at subagentstop_validate.py:161-171) itself calls S.save_state and logs 'integrity_violation' then 'verification' on the test-rerun path. That in-core save-and-log is preserved verbatim and MUST NOT be normalized away, or tests 13 and 13b break. WHAT STAYS IN THE ADAPTER (session / hook-protocol plane): block()/ok(), _fail(), the open_invocation-then-last_invocation resolution, the consecutive_failures counter, the open_invocation lifecycle (retained on reject per test P6, cleared on accept and on blocked), the acceptance S.save_state call, the 'artifact_blocked' / 'artifact_missing' / 'artifact_invalid' / 'artifact_rejected' ledger writes, and the top-level fail-closed exception wrapper that sets flags.integrity_hold and logs 'validator_error'. Adapter Result mapping (must reproduce today's on-disk state and ledger exactly): accepted then set consecutive_failures=0, clear open_invocation, S.save_state, ok(); rejected then _fail (bump consecutive_failures, retain open_invocation, save, log the returned event, block(reason)); blocked then clear open_invocation, save, log 'artifact_blocked', block(reason); integrity_hold then treat as rejected exactly as today (the integrity_hold flag and 'integrity_violation' event were already written inside core, then _fail bumps consecutive_failures, logs 'artifact_rejected', block(reason)). Delete the dead _subject_matches from the SubagentStop validator (called nowhere in that file); the live copy in the state module used by guard() is the single home. The state module is NOT modified in this milestone. This is a pure, behavior-preserving refactor and MUST land alone before any new capability. SF4 INVARIANTS TO UPHOLD (code-review-checkable): the top-level try/except in the adapter main body must enclose BOTH the accept_artifact call AND the adapter's own save/ok, so any raise past the schema/semantic stage sets flags.integrity_hold and logs 'validator_error'; and no core path may return outcome=accepted without having frozen the artifact (accepted-implies-frozen).",
+      "files": [
+        ".claude/hooks/gmdw/accept.py",
+        ".claude/hooks/subagentstop_validate.py"
+      ],
+      "verification": "Run 'python3 tests/test_governance.py' and verify it exits 0 reporting 34 tests OK, driving the extracted core through the thin hook. The behavioral oracle is the existing acceptance suite: tests P3, P5, P6, 13 and 13b must each pass unchanged (P5 pins open_invocation preference over last_invocation; P6 pins open_invocation retention on rejection; P3/13/13b pin accept, schema and semantic behavior). SF4 code-review verification: verify by reading the diff that the top-level exception wrapper encloses both the accept_artifact call and the adapter save/ok, and that every accepted outcome implies the artifact was frozen (no accepted-without-freeze path). Static check: a search for _subject_matches in the SubagentStop validator returns no match; ast.parse of accept.py and of the SubagentStop validator both succeed."
+    },
+    {
+      "id": "M2",
+      "description": "Introduce the human-gated 'wf accept' recovery subcommand in the wf CLI, modeled structurally on cmd_approve, plus its five-plus-one regression tests. Argparse: a new 'accept' subparser with required '--by' (human attribution, matching approve) and an optional '--workflow'. cmd_accept behavior: load state; compute exp = S.expected(root, st); if exp is None (a state that produces no artifact, e.g. terminal or approval states) refuse cleanly with a CLI error and change nothing. Accept ONLY the exact artifact exp names for the current state: atype = exp artifact_type and version = exp version (S.expected computes the next version, st current.get(atype,0)+1, never an already-accepted one). Resolve run_rel = S.artifact_relpath(atype, version) and full = S.workflow_dir(root, wf_id) joined with run_rel. Refuse if the file is absent, or if ledger.is_frozen(root, wf_id, run_rel) is true (already accepted). Then call accept_artifact(root, st, atype, version, actor='human_recovery'): on a non-accepted outcome, refuse via the CLI error path with the returned reason and change NO state; on accepted, the core has already bumped counters, set st current[atype]=version, frozen the artifact and logged 'artifact_accepted' with actor='human_recovery' plus by=<--by value>; cmd_accept then sets consecutive_failures=0, clears open_invocation, calls S.save_state, and prints the accepted type and version. The distinct human_recovery actor and the by field keep audits able to separate hook-accepted from human-recovered artifacts. SF5 NOTE (inherited boundary, not a new capability): a stranded implementation manifest run through 'wf accept' reaches the moved _semantic shell test-rerun; this is the SAME already-accepted trust boundary the hook crosses and is NOT a new capability for the Orchestrator (which already holds Bash), and in a live session the SF1 gate deny (M3) prevents 'wf accept' from being used at all. Tests (new class TestPhase2Recovery(Base)): test_R1_accept_unstrands_valid_repo_analysis (reproduce wf_20260713_003: a schema-valid repo_analysis_v1.json on disk with current.repo_analysis == 0; wf accept --by advances the pointer to 1, freezes the artifact, writes an 'artifact_accepted' ledger event with actor 'human_recovery', CLEARS a dangling open_invocation (F6), and the previously blocked REPOSITORY_ANALYSIS-to-PLANNING transition then passes); test_R2_accept_rejects_schema_invalid_artifact; test_R3_accept_rejects_wrong_version (a version that is not S.expected's next version is refused with no state change); test_R4_accept_rejects_already_frozen; test_R5_accept_requires_by (missing --by exits non-zero, no change); test_R6_accept_refuses_when_expected_is_none (F6: in a state where S.expected returns None, wf accept refuses cleanly with no change).",
+      "files": [
+        ".workflow/bin/wf",
+        ".claude/hooks/gmdw/accept.py",
+        "tests/test_governance.py"
+      ],
+      "verification": "Run 'python3 tests/test_governance.py' and verify it exits 0 reporting 40 tests OK (34 pre-existing plus the 6 new methods test_R1..test_R6, all introduced in this milestone). Each negative test asserts the workflow state file and current pointers are unchanged after refusal. Manual smoke, read-only against a scratch repo: 'wf accept' with no --by exits non-zero (argparse required). Note for the code review: these CLI tests invoke the wf entry point directly (not through Claude's Bash tool), so the M3 gate deny does not affect them; the gate deny is exercised separately in test_R10."
+    },
+    {
+      "id": "M3",
+      "description": "Introduce the human-gated 'wf clear-invocation' recovery subcommand (F1 primary mechanism) AND the SF1 REQUIRED PreToolUse gate deny of both recovery commands, plus their four regression tests. PART A (clear-invocation). RATIONALE (verified): guard() checks open_invocation at state.py:252 and returns 'an agent invocation is still open; cannot transition' BEFORE the ESCALATED allowance at state.py:256 and before any liveness exemption cmd_transition applies; PreToolUse single-flight (pretooluse_gate.py:171) blocks any new invocation; and wf accept clears open_invocation ONLY on a successful accept. So an interrupted invocation that leaves a dangling open_invocation with no recoverable expected-version artifact deadlocks every transition, including ESCALATED/FAILED/REJECTED. Argparse: a new 'clear-invocation' subparser with required '--by' (human attribution) and an optional '--workflow'. cmd_clear_invocation behavior: load state; if st open_invocation is falsy, refuse via the CLI error path (exit non-zero) with no state change and no ledger write; otherwise capture the dead invocation summary (agent, expected_type, version), set st open_invocation = None, call S.save_state, and log a distinct 'invocation_cleared' ledger event with actor='human_recovery', by=<--by value>, and the captured summary. SCOPE OF EFFECT (be precise): clear-invocation ONLY releases the single-flight lock; it does NOT touch counters (consecutive_failures untouched), does NOT advance any current pointer, and does NOT freeze or accept anything. After it runs, guard() no longer sees an open invocation, so 'wf transition ESCALATED' (and FAILED/REJECTED, and normal targets) become reachable again; the human then resolves the escalation via wf approve. PART B (SF1 REQUIRED gate deny). Insert a rule into gate_bash in the PreToolUse gate (.claude/hooks/pretooluse_gate.py) that DENIES any Bash command whose text invokes 'wf accept' or 'wf clear-invocation' whenever a workflow is active. Place it in gate_bash right after the 'if not wid: allow()' guard so it fires for any active workflow regardless of state and needs no state load, pattern-matched like the existing git-push / git-commit rules via re.search on a pattern binding the token wf immediately before either accept or clear-invocation. RATIONALE (state explicitly in the deny message and the docs): the PreToolUse gate executes ONLY when the enforcement hooks are live, so the very fact the gate is running proves the hooks are live; wf accept and wf clear-invocation exist ONLY for the hooks-dark recovery situation, so they are never legitimate when the gate can see them, and denying them there loses no legitimate function. Legitimate operator recovery is unaffected: in a genuinely hooks-dark session the gate does not fire at all, and an operator can always run these commands via the session '!' shell escape or a plain terminal (both bypass hooks), exactly how the orphan-invocation reset and the wall-clock deadline extension were carried out this session. This makes the confinement of the two new authorities code-enforced rather than a prompt-level convention, upholding 'governance enforced by code, never by prompts'; it also neutralizes the SF1 exploit (a misbehaving Orchestrator self-authoring an artifact then self-accepting it via Bash) and the SF2 single-flight-escape race (clear-invocation cannot run in a live session, so there is no live SubagentStop to race). Tests (in TestPhase2Recovery): test_R7_clear_invocation_unblocks_escalate (seed a dangling open_invocation with no recoverable artifact; assert wf transition ESCALATED is first refused by guard with the open-invocation reason; run wf clear-invocation --by; assert open_invocation is None, an 'invocation_cleared' event with actor 'human_recovery' is logged, and wf transition ESCALATED then succeeds); test_R8_clear_invocation_refuses_when_none (no open_invocation: exits non-zero, no state change, no ledger event); test_R9_clear_invocation_requires_by (missing --by exits non-zero, no change); test_R10_gate_denies_recovery_commands_while_active (SF1: with an ACTIVE workflow, a Bash 'wf accept --by ci' and a Bash 'wf clear-invocation --by ci' are EACH denied by the PreToolUse gate via self.pretool('Bash', ...)/assertDenied with the hooks-live-recovery reason, while an unrelated 'wf status' Bash command is allowed).",
+      "files": [
+        ".workflow/bin/wf",
+        ".claude/hooks/pretooluse_gate.py",
+        "tests/test_governance.py"
+      ],
+      "verification": "Run 'python3 tests/test_governance.py' and verify it exits 0 reporting 44 tests OK (40 from M2 plus the 4 new methods test_R7..test_R10). Each negative test asserts state and pointers are unchanged. test_R10 asserts BOTH recovery commands are denied while a workflow is active and that a benign wf command is allowed (no over-broad match). Static check: a search for 'clear-invocation' in the wf CLI shows the subparser and cmd_clear_invocation wired in; a search for the wf-accept/clear-invocation deny pattern in gate_bash of the PreToolUse gate returns a match; ast.parse of the wf CLI and of the PreToolUse gate both succeed."
+    },
+    {
+      "id": "M4",
+      "description": "Introduce a mid-run transition-time liveness re-check plus its supporting ledger read helper, the bypass reconciliation with the SF3 hardened truthiness, and the test-fixture heartbeat seed, plus its two regression tests. (a) In the gmdw ledger module introduce a read-side helper (the module is write-only today) that reads the decision log and reports whether a hook-sourced event appears since the workflow's last 'transition' event, e.g. hook_event_since_last_transition(root, wf_id) returning bool, using the CONFIRMED hook-sourced event allowlist (F3): 'invocation_requested' (pretooluse_gate.py:182), 'invocation_completed' (posttooluse_ledger.py:74), and 'invocation_failed' (posttooluse_ledger.py:69). 'artifact_accepted' is deliberately EXCLUDED because the CLI writes it too (state.py:484-486 with actor='orchestrator', and now wf accept), so it cannot prove a hook fired. (b) In the wf CLI cmd_transition, before calling S.transition, when a workflow is ACTIVE and the target state a.to is not one of ESCALATED / FAILED / REJECTED (recovery/abandon exits stay exempt), compute liveness as: live if ledger.hook_event_since_last_transition(root, wf_id) is true OR heartbeat.status(root)[0] is true. heartbeat.status already carries the F-1 future-skew bound (MAX_FUTURE_SKEW_SEC=60), so the bound is inherited. If not live and not bypassed, refuse via the CLI error path with a diagnostic naming the real cause (governance hooks are not firing in this session) parallel to the init refusal and referencing the override, and log a 'transition_denied' ledger event (from_state, to_state, reason) so the mid-run refusal leaves an audit trail. (c) Bypass reconciliation (F-8) with SF3 hardening: honor GMDW_ALLOW_UNGOVERNED (the canonical name the ADR prescribes) at transition, reading it with a HARDENED affirmative check that treats ONLY an explicit member of {'1','true','yes','on'} (case-insensitive, stripped) as enabling the bypass, so GMDW_ALLOW_UNGOVERNED=0 or =false does NOT bypass (it fails CLOSED), closing the Phase-1 F-4 fail-open footgun for the more powerful mid-run gate; also accept a '--allow-ungoverned' flag on the transition subparser; on any bypass while ACTIVE log 'governance_liveness_bypassed' (reason, actor) mirroring init. Apply the SAME hardened affirmative check to GMDW_ALLOW_UNGOVERNED wherever it is read, including at init, so the canonical name never fails open at either site. DECISION (SF3, explicit): the legacy GMDW_ALLOW_UNGOVERNED_INIT keeps its existing loose truthiness read at init UNCHANGED (hardening it is Phase-1 F-4 and remains out of scope), so shipped Phase-1 init behavior is not altered; only the new canonical GMDW_ALLOW_UNGOVERNED uses the hardened check. Keep GMDW_ALLOW_UNGOVERNED_INIT honored at init for backward compatibility. (d) Seed a fresh heartbeat in the test-suite Base.setUp (after S.create_workflow) via heartbeat.touch(self.tmp, 'test-fixture') so the existing self.wf('transition', ...) calls in TestLimits / TestArtifacts / TestSecurityAndDeploy represent a governed session and pass the new check; document the seed with a comment. The state module and the heartbeat module are NOT modified. Tests (in TestPhase2Recovery): test_R11_transition_refuses_when_hooks_dark (ACTIVE workflow with the seeded heartbeat expired or removed AND no hook-sourced ledger event since the last transition: wf transition to a non-exempt state is refused with the liveness diagnostic and a 'transition_denied' ledger event, and state is unchanged); test_R12_transition_bypass_proceeds_and_logs (same dark condition, with GMDW_ALLOW_UNGOVERNED set to an affirmative value or --allow-ungoverned given, the transition proceeds and a 'governance_liveness_bypassed' event is logged; ALSO assert the SF3 hardening: with GMDW_ALLOW_UNGOVERNED=0 the transition is STILL refused, i.e. =0 fails closed; ALSO assert a transition to ESCALATED is NOT subject to the liveness check).",
+      "files": [
+        ".workflow/bin/wf",
+        ".claude/hooks/gmdw/ledger.py",
+        "tests/test_governance.py"
+      ],
+      "verification": "Run 'python3 tests/test_governance.py' and verify it exits 0 reporting 46 tests OK (44 from M3 plus the 2 new methods test_R11..test_R12); all existing TestLimits / TestArtifacts / TestSecurityAndDeploy transition tests still pass because Base.setUp now seeds a heartbeat. test_R12 asserts both the affirmative bypass proceeds-and-logs AND that GMDW_ALLOW_UNGOVERNED=0 does NOT bypass (SF3 fail-closed). Static check: ast.parse of the ledger module succeeds and a search for GMDW_ALLOW_UNGOVERNED in the wf CLI shows the canonical name wired into both init and transition with the hardened affirmative check."
+    },
+    {
+      "id": "M5",
+      "description": "Consolidated green-gate milestone that also lands the fail-closed validator-wrapper test the reviewer asked for (F6/SF4/AC3). Introduce test_R13_validator_error_sets_integrity_hold in TestPhase2Recovery: drive the real SubagentStop validator against a valid, expected artifact but with a deterministic internal fault injected on disk (recommended: corrupt the run's artifacts_index.json to non-JSON so freeze inside the accept path raises during registry load, which is past schema and semantic checks and inside main()'s body), then assert the top-level exception wrapper set flags.integrity_hold, logged a 'validator_error' event, and emitted a block decision. The implementor may substitute any equally deterministic disk-level fault that makes the accept path raise strictly AFTER the schema/semantic stage and INSIDE main()'s body (SF4). This milestone runs the full suite as the refactor-safety gate: the extraction (M1), both recovery commands and the SF1 gate deny (M2/M3), and the mid-run liveness re-check with SF3 hardening (M4) must all be green together through the thin hook and the new commands. No production behavior changes here beyond the single new test.",
+      "files": [
+        "tests/test_governance.py"
+      ],
+      "verification": "Run 'python3 tests/test_governance.py' and verify it exits 0 reporting 47 tests OK (the 34 pre-existing tests all present and passing, plus the 13 new methods test_R1..test_R13). Verify by name that test_R13_validator_error_sets_integrity_hold is collected and passes and that test_13 (integrity-hold via test-rerun mismatch) still passes."
+    },
+    {
+      "id": "M6",
+      "description": "Documentation and ADR status updates only (no code). In the KNOWN_LIMITATIONS doc update the R4 and F1 rows to state PRECISELY what is now closed and to record the residual, replacing the 'Mid-run hook loss is not yet caught, see Phase 2' wording. State that R4/F1 is closed via four detection/recovery mechanisms: (1) init refusal (Phase 1); (2) a mid-run transition liveness re-check; (3) stranded-artifact recovery via 'wf accept --by'; and (4) orphaned-invocation recovery via 'wf clear-invocation --by'; AND that the two recovery commands are code-confined to hooks-dark sessions by a REQUIRED PreToolUse gate deny (SF1) so they cannot be abused by a misbehaving in-session Orchestrator while hooks are live. Record the residual explicitly: --by is trusted, not verified, but it only matters in a genuinely hooks-dark session because the gate deny makes both commands unreachable when hooks are live; in a hooks-dark session recovery relies on a real human at the terminal or the '!' shell escape; guard()'s single-flight ordering is intentionally left unchanged and orphaned invocations are cleared by human recovery rather than auto-bypassed; the moved _semantic shell test-rerun (SF5) is an inherited, already-accepted trust boundary, not a new capability, and is also blocked from live-session laundering by the SF1 deny; the legacy GMDW_ALLOW_UNGOVERNED_INIT loose truthiness (Phase-1 F-4) remains deferred while the new canonical GMDW_ALLOW_UNGOVERNED is hardened; and a general 'wf extend-deadline' in-governance recovery command is a noted future gap. Do NOT claim closure beyond these mechanisms. In the gmdw command doc insert a note that transitions verify governance-hook liveness mid-run (with the GMDW_ALLOW_UNGOVERNED / --allow-ungoverned audited override, affirmative values only), that 'wf accept --by <human>' is the human recovery path for a stranded, validly-produced artifact, that 'wf clear-invocation --by <human>' is the human recovery path for an orphaned open_invocation, and that both recovery commands are denied by the PreToolUse gate while hooks are live and must be run from a hooks-dark session. Set the ADR-001 phase2-plan doc status to Accepted / Implemented and the ADR-001 acceptance-and-liveness doc status from Proposed to Accepted / Implemented.",
+      "files": [
+        "docs/KNOWN_LIMITATIONS.md",
+        ".claude/commands/gmdw.md",
+        "docs/adr/ADR-001-phase2-plan.md",
+        "docs/adr/ADR-001-artifact-acceptance-and-hook-liveness.md"
+      ],
+      "verification": "Manual read: a search for 'wf accept' and 'clear-invocation' in the gmdw command doc each return a match and the doc states both are denied by the gate while hooks are live; the R4/F1 rows in the KNOWN_LIMITATIONS doc no longer say mid-run is Phase 2, enumerate the four closure mechanisms plus the SF1 code-confinement, and record the residual; both ADR files show an Accepted/Implemented status line. No code behavior changes; 'python3 tests/test_governance.py' still exits 0 with 47 tests."
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "criterion": "The full governance suite passes unchanged after the item-1 extraction: 'python3 tests/test_governance.py' exits 0 reporting 34 tests OK with all acceptance mechanics driven through the new gmdw/accept.py via the thin adapter, and the oracle tests P3, P5, P6, 13, 13b each pass.",
+      "verification_method": "integration_test"
+    },
+    {
+      "id": "AC2",
+      "criterion": "accept.py exposes accept_artifact(root, st, atype, version, *, actor=None) (no rerun_tests parameter) returning a Result with outcome in {accepted, rejected, blocked, integrity_hold}, and the SubagentStop validator no longer defines _subject_matches (dead copy removed) while the state module's copy is retained and still used by guard().",
+      "verification_method": "static_check"
+    },
+    {
+      "id": "AC3",
+      "criterion": "The SubagentStop hook still fails closed: an internal error while a workflow is ACTIVE sets flags.integrity_hold and logs 'validator_error' (pinned by new test_R13), and a test-rerun mismatch still sets integrity_hold, logs 'integrity_violation', bumps consecutive_failures and blocks (pinned by test_13), exactly as before the refactor; _semantic's in-core save-and-log at the integrity branch is preserved verbatim (F4); the top-level exception wrapper encloses both the accept_artifact call and the adapter save/ok, and no accepted outcome occurs without a freeze (SF4, verified at code review).",
+      "verification_method": "integration_test"
+    },
+    {
+      "id": "AC4",
+      "criterion": "test_R1_accept_unstrands_valid_repo_analysis passes: with a schema-valid repo_analysis_v1.json on disk and current.repo_analysis == 0, 'wf accept --by <human>' advances current.repo_analysis to 1, freezes the artifact, writes an 'artifact_accepted' ledger event with actor 'human_recovery', clears a dangling open_invocation, and the REPOSITORY_ANALYSIS-to-PLANNING transition subsequently succeeds.",
+      "verification_method": "integration_test"
+    },
+    {
+      "id": "AC5",
+      "criterion": "'wf accept' refuses and changes no state for: a schema-invalid artifact (test_R2), a version that is not S.expected's next version (test_R3), an already-frozen artifact (test_R4), a missing --by argument (test_R5 exits non-zero), and a state where S.expected returns None (test_R6).",
+      "verification_method": "integration_test"
+    },
+    {
+      "id": "AC6",
+      "criterion": "Orphaned-invocation recovery (F1): with a dangling open_invocation and no recoverable expected-version artifact, 'wf transition ESCALATED' is first refused by guard(), then 'wf clear-invocation --by <human>' sets open_invocation to None, logs an 'invocation_cleared' event with actor 'human_recovery', touches no counters or pointers, and the ESCALATED transition then succeeds (test_R7); wf clear-invocation refuses with no state change and no ledger write when there is no open_invocation (test_R8) and exits non-zero when --by is missing (test_R9).",
+      "verification_method": "integration_test"
+    },
+    {
+      "id": "AC7",
+      "criterion": "test_R11_transition_refuses_when_hooks_dark passes: with the heartbeat stale/absent and no hook-sourced ledger event since the last transition, a 'wf transition' to a non-exempt state is refused with a diagnostic naming governance-hook liveness and a 'transition_denied' ledger event is written, state unchanged; and test_R12_transition_bypass_proceeds_and_logs passes: under the same dark condition, an affirmative GMDW_ALLOW_UNGOVERNED or --allow-ungoverned lets the transition proceed and logs 'governance_liveness_bypassed', while transitions to ESCALATED / FAILED / REJECTED are never subject to the liveness check.",
+      "verification_method": "integration_test"
+    },
+    {
+      "id": "AC8",
+      "criterion": "The ledger module gains a read-side helper reporting whether a hook-sourced event (allowlist exactly {invocation_requested, invocation_completed, invocation_failed}, excluding artifact_accepted) appears since the last 'transition' event; cmd_transition treats the workflow as live if that helper is true OR heartbeat.status()[0] is true.",
+      "verification_method": "static_check"
+    },
+    {
+      "id": "AC9",
+      "criterion": "Bypass naming is reconciled: GMDW_ALLOW_UNGOVERNED is honored by both 'wf init' and 'wf transition', GMDW_ALLOW_UNGOVERNED_INIT continues to work at init, and Base.setUp seeds a fresh heartbeat so all pre-existing transition tests still pass.",
+      "verification_method": "integration_test"
+    },
+    {
+      "id": "AC10",
+      "criterion": "The complete suite 'python3 tests/test_governance.py' exits 0 reporting 47 tests OK (34 pre-existing preserved plus 13 new test_R1..test_R13); no schema file under the workflow schemas directory is modified and no state-shape field is introduced beyond the test-only heartbeat seed.",
+      "verification_method": "integration_test"
+    },
+    {
+      "id": "AC11",
+      "criterion": "Docs updated: the KNOWN_LIMITATIONS R4/F1 rows state precisely what is closed (init refusal, mid-run liveness re-check, stranded-artifact recovery via wf accept, orphaned-invocation recovery via wf clear-invocation) plus the SF1 code-confinement (PreToolUse deny of both recovery commands while hooks are live) and record the residual (--by trusted not verified but only relevant in a hooks-dark session; guard ordering unchanged; SF5 inherited shell boundary; legacy GMDW_ALLOW_UNGOVERNED_INIT truthiness deferred; wf extend-deadline noted as a future gap), without claiming closure beyond those mechanisms; the gmdw command doc mentions wf accept, wf clear-invocation, mid-run liveness verification, and the gate deny of both recovery commands while hooks are live; both ADR-001 documents show an Accepted/Implemented status.",
+      "verification_method": "manual"
+    },
+    {
+      "id": "AC12",
+      "criterion": "SF1 (required code control): gate_bash in the PreToolUse gate DENIES a Bash command invoking 'wf accept' or 'wf clear-invocation' whenever a workflow is active, while leaving unrelated wf commands (e.g. 'wf status') allowed; pinned by test_R10_gate_denies_recovery_commands_while_active, which asserts a deny for each recovery command and an allow for the benign command.",
+      "verification_method": "integration_test"
+    },
+    {
+      "id": "AC13",
+      "criterion": "SF3 (hardened truthiness): the new canonical GMDW_ALLOW_UNGOVERNED enables the bypass ONLY for an explicit affirmative value in {'1','true','yes','on'} (case-insensitive); GMDW_ALLOW_UNGOVERNED=0 or =false does NOT bypass and the transition is still refused when hooks are dark, asserted in test_R12; the legacy GMDW_ALLOW_UNGOVERNED_INIT loose truthiness is intentionally left unchanged.",
+      "verification_method": "integration_test"
+    }
+  ],
+  "risks": [
+    {
+      "risk": "Behavioral drift while extracting the most safety-critical code in the repo (the accept pipeline), e.g. a reordered save/freeze, a lost counter bump, or an altered ledger event shape.",
+      "likelihood": "medium",
+      "impact": "high",
+      "mitigation": "Land item 1 as a pure, behavior-preserving refactor ALONE, gated on the existing 34-test oracle (P3/P5/P6/13/13b named) being green before any new capability is introduced. Move _semantic verbatim including its internal integrity-hold save-and-log (F4) rather than normalizing it. Keep the artifact_accepted event free of an actor field on the hook path."
+    },
+    {
+      "risk": "The thin adapter drops the top-level fail-closed exception wrapper, turning a broken accept into a fail-open acceptance.",
+      "likelihood": "low",
+      "impact": "high",
+      "mitigation": "Keep the try/except wrapper (integrity_hold plus 'validator_error' plus block) in the SubagentStop validator main guard around the adapter, enclosing both accept_artifact and the adapter save/ok (SF4); new test_R13 (F6) pins that it still engages, and AC3 requires accepted-implies-frozen."
+    },
+    {
+      "risk": "SF1: 'wf accept' and 'wf clear-invocation' are new code-level, Bash-callable authorities more powerful than 'wf approve': accept advances current[atype], bumps counters and freezes; clear-invocation releases the single-flight lock. Guarded only by a trusted --by string, a misbehaving in-session Orchestrator could self-author an artifact and self-accept it, or escape single-flight, bypassing the subagent header/model-pin/budget/single-flight gating.",
+      "likelihood": "low",
+      "impact": "high",
+      "mitigation": "REQUIRED (not optional) PreToolUse gate deny of both commands whenever a workflow is active (M3 Part B): because the gate runs only when hooks are live, and both commands exist solely for the hooks-dark recovery case, denying them while the gate can see them loses no legitimate function and makes the confinement code-enforced. wf accept additionally runs identical core validation, accepts ONLY S.expected's exact next-version artifact, refuses already-frozen artifacts, and records the distinct human_recovery actor; wf clear-invocation touches no counters/pointers/freeze. Pinned by test_R10 / AC12."
+    },
+    {
+      "risk": "The SF1 gate deny is a syntactic pattern rule (re.search on the command text) and could in principle be evaded by dynamic command construction (aliases, variable expansion, a wrapper script).",
+      "likelihood": "low",
+      "impact": "medium",
+      "mitigation": "This is the same syntactic-guard property as every existing gate_bash rule (the git-push, git-commit and package-install denies); the rule raises the bar and makes the naive self-accept path code-denied, which is the concrete SF1 exploit. Residual acknowledged in KNOWN_LIMITATIONS: a determined obfuscator already holds Bash and therefore gains no privilege the model lacks (SF5). The deny is defense-in-depth over the identical-core-validation and expected-next-version-only controls, not the sole barrier."
+    },
+    {
+      "risk": "Seeding a heartbeat in Base.setUp could mask a genuine liveness regression because every legacy test then sees a fresh beacon.",
+      "likelihood": "low",
+      "impact": "medium",
+      "mitigation": "Dedicated tests (test_R11/test_R12) explicitly expire or remove the heartbeat and clear hook-sourced ledger events to exercise the refusal and bypass paths directly."
+    },
+    {
+      "risk": "SF3: the mid-run bypass reuses loose truthiness so GMDW_ALLOW_UNGOVERNED=0 would fail open, silently disabling the more powerful mid-run liveness gate on a stray env assignment.",
+      "likelihood": "low",
+      "impact": "medium",
+      "mitigation": "Read GMDW_ALLOW_UNGOVERNED with a hardened affirmative check ({'1','true','yes','on'}, case-insensitive) at both transition and init so =0/=false fails closed; assert this in test_R12 / AC13. The legacy GMDW_ALLOW_UNGOVERNED_INIT is left unchanged by explicit decision (F-4 deferred)."
+    },
+    {
+      "risk": "SF5: the moved _semantic shell test-rerun (shell=True) plus git merge-base is now reachable from the CLI when a human runs 'wf accept' against a stranded implementation manifest.",
+      "likelihood": "low",
+      "impact": "medium",
+      "mitigation": "This is the same already-accepted trust boundary the hook uses; it is an inherited surface, not a new capability (the model already holds Bash and can run any command directly), and the SF1 gate deny additionally prevents laundering arbitrary shell execution as a governed test-rerun while hooks are live. Documented as a known accepted surface in KNOWN_LIMITATIONS."
+    },
+    {
+      "risk": "Circular import between accept.py and the state module.",
+      "likelihood": "low",
+      "impact": "medium",
+      "mitigation": "accept.py imports the state module (as S), the ledger module and the schemas module; the state module does NOT import accept. The cmd_transition liveness lives in the wf CLI and the ledger module, not in the state module, so the state module is unchanged."
+    }
+  ],
+  "assumptions": [
+    "pytest is not installed in this environment; the authoritative oracle is 'python3 tests/test_governance.py' (stdlib unittest), which currently reports 34 tests OK (verified this session).",
+    "current.plan == 2 for wf_20260714_001 (verified via the run state.json), so this plan artifact is version 3 (plan_v3.json), the exact next version S.expected() names; this is the FINAL allowed plan revision.",
+    "guard() checks open_invocation at state.py:252 and returns BEFORE the ESCALATED allowance at state.py:256 (verified), so a dangling open_invocation blocks every transition including the recovery exits; the F1 fix is the human-gated 'wf clear-invocation' CLI command, and guard()'s ordering is intentionally NOT changed.",
+    "gate_bash in the PreToolUse gate (pretooluse_gate.py:269-297, verified this session) today denies neither 'wf accept' nor 'wf clear-invocation' and matches deny rules with re.search patterns like the git-push rule; the SF1 rule is inserted in the same style right after the 'if not wid: allow()' guard so it fires for any active workflow regardless of state.",
+    "The PreToolUse gate executes ONLY when the enforcement hooks are live (it touches the heartbeat at pretooluse_gate.py:309), so the gate firing PROVES the hooks are live; therefore denying the two hooks-dark recovery commands whenever the gate can see them removes no legitimate function.",
+    "Legitimate operator recovery in a genuinely hooks-dark session still works because the gate does not fire then, and the operator runs the recovery commands via the session '!' shell escape or a plain terminal (both bypass hooks), exactly as the orphan-invocation reset and the wall-clock deadline extension were carried out this session.",
+    "The hook-sourced allowlist is confirmed (F3): 'invocation_requested' (pretooluse_gate.py:182), 'invocation_completed' (posttooluse_ledger.py:74), 'invocation_failed' (posttooluse_ledger.py:69); 'artifact_accepted' is excluded because the CLI writes it (state.py:484-486, actor='orchestrator', and now wf accept). The prior 'unverified event names' risk is retired.",
+    "_semantic's integrity-hold branch (subagentstop_validate.py:161-171) calls S.save_state and logs 'integrity_violation' then 'verification' on the test-rerun path; this is the ONE intentional in-core save-and-log and is preserved verbatim; there is no rerun_tests parameter on accept_artifact (F4).",
+    "wf accept resets consecutive_failures to 0 and clears open_invocation on a successful recovery (mirroring hook acceptance); wf clear-invocation only clears open_invocation and touches no other state field. Neither is a state-shape change.",
+    "wf accept and wf clear-invocation trust the --by value (human attribution); it is not cryptographically verified, but this only matters in a hooks-dark session because the SF1 gate deny makes both commands unreachable while hooks are live.",
+    "The new canonical GMDW_ALLOW_UNGOVERNED bypass is read with a hardened affirmative check ({'1','true','yes','on'}, case-insensitive) at both init and transition (SF3); the legacy GMDW_ALLOW_UNGOVERNED_INIT keeps its existing loose truthiness at init by explicit decision (Phase-1 F-4 remains deferred).",
+    "The liveness re-check is placed in the wf CLI cmd_transition (not in state.transition), consistent with Phase 1 placing the init check in cmd_init and keeping the state core as pure mechanism.",
+    "Transitions to ESCALATED / FAILED / REJECTED are exempt from the liveness check; combined with wf clear-invocation, recovery and abandon exits are reachable once any dangling open_invocation is cleared.",
+    "heartbeat.status() already carries the F-1 future-skew bound (MAX_FUTURE_SKEW_SEC=60) and is reused unchanged; the heartbeat module is not modified.",
+    "This live run surfaced that GMDW lacks an in-governance wall-clock deadline-extension recovery command (the extension needed this session was a hooks-dark raw edit); a 'wf extend-deadline' command is a noted future recovery-command gap, NOT implemented here, to keep scope to the request plus the SF1/SF3 security fixes.",
+    "No new or changed artifact schema is required; all nine schema files remain untouched."
+  ],
+  "dependencies": [
+    {
+      "kind": "human_input",
+      "detail": "'wf accept' and 'wf clear-invocation' each require a human --by attribution value at invocation time; they are recovery gates, not orchestrator-callable commands, in the same category as 'wf approve', and are code-confined to hooks-dark sessions by the SF1 PreToolUse deny."
+    }
+  ],
+  "files": [
+    {
+      "path": ".claude/hooks/gmdw/accept.py",
+      "action": "create",
+      "reason": "New pure, repository-scoped core module holding accept_artifact() and the moved _semantic() (with its git-ancestry and shell test-rerun checks); the single home of the accept pipeline, callable from both the hook and the CLI."
+    },
+    {
+      "path": ".claude/hooks/subagentstop_validate.py",
+      "action": "modify",
+      "reason": "Reduce to a thin adapter: resolve the active invocation, call accept_artifact, translate the Result to block/ok and the session-plane mutations (consecutive_failures, open_invocation, the acceptance save_state); keep the fail-closed exception wrapper enclosing both the call and the adapter save/ok (SF4); delete the dead _subject_matches copy."
+    },
+    {
+      "path": ".workflow/bin/wf",
+      "action": "modify",
+      "reason": "Introduce the 'wf accept --by' recovery subcommand and the 'wf clear-invocation --by' orphaned-invocation recovery subcommand (both reusing core primitives), and introduce the mid-run liveness re-check in cmd_transition with the GMDW_ALLOW_UNGOVERNED / --allow-ungoverned audited bypass using the SF3 hardened affirmative check, and reconciled init bypass naming."
+    },
+    {
+      "path": ".claude/hooks/pretooluse_gate.py",
+      "action": "modify",
+      "reason": "SF1 (required): insert a rule into gate_bash that DENIES any Bash command invoking 'wf accept' or 'wf clear-invocation' whenever a workflow is active, pattern-matched like the existing git-push / git-commit rules, converting the confinement of the two new authorities from a prompt-level convention into a code-level guarantee. Verified this session at pretooluse_gate.py:269-297."
+    },
+    {
+      "path": ".claude/hooks/gmdw/ledger.py",
+      "action": "modify",
+      "reason": "Introduce a read-side helper over the decision log reporting whether a hook-sourced event (allowlist invocation_requested / invocation_completed / invocation_failed) appears since the last 'transition' event (the module is write-only today); used by the cmd_transition liveness predicate."
+    },
+    {
+      "path": "tests/test_governance.py",
+      "action": "modify",
+      "reason": "Seed a fresh heartbeat in Base.setUp so existing transition tests represent a governed session; introduce the thirteen Phase-2 regression tests (test_R1..test_R13) for wf accept, wf clear-invocation, the SF1 gate deny, mid-run transition liveness with SF3 hardening, and the fail-closed validator wrapper."
+    },
+    {
+      "path": "docs/KNOWN_LIMITATIONS.md",
+      "action": "modify",
+      "reason": "Update R4/F1 to record the four closure mechanisms plus the SF1 code-confinement and the residual, replacing the 'mid-run is Phase 2' note; do not overstate closure."
+    },
+    {
+      "path": ".claude/commands/gmdw.md",
+      "action": "modify",
+      "reason": "Document that transitions verify governance-hook liveness mid-run (with the audited affirmative-only override), that 'wf accept --by' and 'wf clear-invocation --by' are the human recovery paths for a stranded artifact and an orphaned invocation, and that both recovery commands are denied by the PreToolUse gate while hooks are live."
+    },
+    {
+      "path": "docs/adr/ADR-001-phase2-plan.md",
+      "action": "modify",
+      "reason": "Set status to Accepted / Implemented once Phase 2 lands."
+    },
+    {
+      "path": "docs/adr/ADR-001-artifact-acceptance-and-hook-liveness.md",
+      "action": "modify",
+      "reason": "Set status from Proposed to Accepted / Implemented."
+    }
+  ],
+  "revision_notes": [
+    {
+      "finding_id": "SF1",
+      "resolution": "MAJOR resolved by pulling the PreToolUse Bash deny of BOTH 'wf accept' and 'wf clear-invocation' into REQUIRED scope (was flagged optional in plan_v2). M3 Part B inserts a rule into gate_bash (.claude/hooks/pretooluse_gate.py, verified at lines 269-297) that denies any Bash command matching the wf accept / clear-invocation pattern whenever a workflow is active, placed right after the 'if not wid: allow()' guard and modeled on the existing git-push / git-commit deny rules. Rationale stated in the deny message and docs: the gate runs ONLY when hooks are live (it touches the heartbeat at pretooluse_gate.py:309), so the gate firing proves the hooks are live; the two commands exist ONLY for the hooks-dark recovery situation, so denying them while the gate can see them loses no legitimate function; legitimate operator recovery still works in a hooks-dark session via the '!' shell escape or a plain terminal. This neutralizes the exploit (self-author then 'wf accept --by anything' to self-accept any artifact type past the header/model-pin/budget/single-flight gating). Concrete deliverables: pretooluse_gate.py included in files[] (modify); M3 milestone step; acceptance criterion AC12; and named test test_R10_gate_denies_recovery_commands_while_active proving both commands are DENIED while active and a benign wf command is allowed. scope.out no longer frames the deny as optional; risks[2] now lists the required deny as the primary mitigation."
+    },
+    {
+      "finding_id": "SF2",
+      "resolution": "MINOR subsumed by SF1: because the gate denies 'wf clear-invocation' whenever a workflow is active (hooks live), the command cannot run in a live session, so it cannot release the single-flight lock while a subagent is running nor cause a still-running subagent's SubagentStop to validate against a newer open_invocation. Residual recorded in M6 / KNOWN_LIMITATIONS: clear-invocation is intended ONLY for an orphaned invocation with no running subagent (a hooks-dark condition), and it deliberately does not reset consecutive_failures so the two-failure escalation limit cannot be dodged. The SF1 control's liveness keying is inherent (the gate itself only executes when hooks fire), so a genuinely live run cannot clear its own in-flight lock through the gate."
+    },
+    {
+      "finding_id": "SF3",
+      "resolution": "MINOR resolved by hardening the new canonical GMDW_ALLOW_UNGOVERNED bypass (M4c) to accept ONLY an explicit affirmative in {'1','true','yes','on'} (case-insensitive, stripped), applied wherever it is read (both transition and init), so GMDW_ALLOW_UNGOVERNED=0 or =false fails CLOSED instead of activating the bypass. Explicit decision recorded (scope.out, assumptions): the legacy GMDW_ALLOW_UNGOVERNED_INIT keeps its existing loose truthiness at init UNCHANGED (Phase-1 F-4 remains deferred) so shipped Phase-1 init behavior is not altered. Backed by acceptance criterion AC13 and asserted in test_R12 (which additionally checks =0 does NOT bypass while hooks are dark); governance_liveness_bypassed is logged on every bypassed transition."
+    },
+    {
+      "finding_id": "SF4",
+      "resolution": "INFO folded into the extraction milestone and its criteria: M1 description and verification now require the top-level exception wrapper in the adapter to enclose BOTH the accept_artifact call AND the adapter's own save/ok, and require accepted-implies-frozen (no core path returns outcome=accepted without freezing). AC3 restates these invariants; test_R13 (M5) injects its fault strictly AFTER the schema/semantic stage and INSIDE main()'s body (artifacts_index.json corruption on freeze) to exercise the wrapper. The benign save-after-freeze reordering is retained as fail-closed on a freeze fault."
+    },
+    {
+      "finding_id": "SF5",
+      "resolution": "INFO folded into M2 verification, risks[7] and M6 docs: the moved _semantic still runs the artifact-declared tests.command under shell=True plus a git merge-base subprocess, and 'wf accept' makes it reachable from the CLI; this is the SAME already-accepted trust boundary the hook crosses and NOT a new capability (the Orchestrator already holds Bash). The SF1 hooks-live gate deny additionally prevents laundering arbitrary shell execution as a governed test-rerun in a live session. KNOWN_LIMITATIONS documents it as a known, accepted inherited surface rather than a new one."
+    }
+  ]
+}

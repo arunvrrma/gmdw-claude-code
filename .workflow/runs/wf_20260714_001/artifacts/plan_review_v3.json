@@ -1,0 +1,132 @@
+{
+  "artifact_type": "plan_review",
+  "workflow_id": "wf_20260714_001",
+  "version": 3,
+  "produced_by": "plan-reviewer",
+  "input_artifact_refs": [
+    ".workflow/runs/wf_20260714_001/artifacts/plan_v3.json",
+    ".workflow/runs/wf_20260714_001/artifacts/security_review_plan_v1.json",
+    ".workflow/runs/wf_20260714_001/artifacts/plan_review_v2.json",
+    ".workflow/runs/wf_20260714_001/artifacts/repo_analysis_v1.json"
+  ],
+  "created_at": "2026-07-15T14:00:00Z",
+  "status": "complete",
+  "mode": "plan",
+  "subject_ref": ".workflow/runs/wf_20260714_001/artifacts/plan_v3.json",
+  "verdict": "approve",
+  "verdict_rationale": "plan_v3 resolves all three Security Reviewer findings (SF1 major, SF2/SF3 minor) and regresses nothing that plan_review_v2 approved. I verified every load-bearing claim against the live code rather than the plan prose. SECURITY RESOLUTIONS. SF1 (MAJOR, resolved): the optional PreToolUse deny is now a REQUIRED code control. M3 Part B, files[] (the PreToolUse gate, modify), AC12 and named test test_R10_gate_denies_recovery_commands_while_active together specify a gate_bash rule that DENIES any Bash command invoking 'wf accept' or 'wf clear-invocation' whenever a workflow is active, pattern-matched with re.search like the existing deny rules. I checked gate_bash at pretooluse_gate lines 269-297: the 'if not wid: allow()' guard is at 271-272 and the state load is at 279, so placing the rule immediately after the wid guard (as the plan directs) makes it fire for any active workflow regardless of state and needs no state load, exactly like the git-push rule (line 282) and git-commit rule (line 290). The rationale is sound and its premise is real: main() touches the heartbeat at line 309 before dispatch, so the gate executes ONLY when the enforcement plane is live; both recovery commands exist solely for hooks-dark recovery, so denying them while the gate can see them loses no legitimate function and neutralizes the SF1 exploit (a misbehaving Orchestrator self-authoring an artifact then self-accepting it via Bash) and the SF2 race (no live SubagentStop to race). Legitimate hooks-dark operator recovery is preserved: when hooks are dark the gate does not fire, and the operator runs the commands via the shell escape or a plain terminal. SF3 (MINOR, resolved): M4c and AC13 specify that the new canonical GMDW_ALLOW_UNGOVERNED is read with a hardened affirmative check accepting ONLY an explicit member of {'1','true','yes','on'} (case-insensitive, stripped) at BOTH transition and init, so GMDW_ALLOW_UNGOVERNED=0 or =false fails CLOSED; test_R12 asserts the fail-closed behavior; the legacy GMDW_ALLOW_UNGOVERNED_INIT keeps its loose truthiness by explicit decision (Phase-1 F-4 deferred, recorded in scope.out and assumptions). SF2 (MINOR, resolved/subsumed): revision_notes[SF2], M6 and KNOWN_LIMITATIONS record that the SF1 hooks-live deny makes clear-invocation unreachable in a live session (so it cannot release single-flight while a subagent runs), and that clear-invocation deliberately does not reset consecutive_failures; M3 states it touches no counters, pointers or freeze. SF4/SF5 (INFO) stay folded into M1/M2/M5, AC3 and risks for code-review-time verification. NO PLAN_V2 REGRESSION. I re-verified the M1 move/stay split, the dead _subject_matches deletion (defined only at subagentstop_validate line 64; all live calls are in the state module at 311/337/379/395/417), the artifact_accepted liveness exclusion (the CLI writes it with actor='orchestrator' at state module 484-486), the wf accept next-version-only restriction (M2), the wf clear-invocation milestone (M3 Part A), the hook-event allowlist {invocation_requested at pretooluse_gate 182, invocation_completed at posttooluse_ledger 74, invocation_failed at posttooluse_ledger 69}, and the four-mechanism R4/F1 closure wording plus SF1 code-confinement in M6/AC11 without overclaim. TEST ACCOUNTING is arithmetically consistent: M2 34 then 40 (R1-R6, plus 6), M3 40 then 44 (R7-R10, plus 4, R10 being the new SF1 gate-deny test), M4 44 then 46 (R11-R12, plus 2), M5 47 (34 preserved plus 13 new R1-R13); 6 plus 4 plus 2 plus 1 equals 13 and 34 plus 13 equals 47, matching every verification block and AC10; the baseline is 34 tests OK (verified this session). ADVERSARIAL PASS on the new deny rule: a token-bound pattern (wf immediately before accept or clear-invocation) does not over-match the other subcommands (status/transition/approve/validate/init/expected/close contain neither literal) and test_R10 pins that 'wf status' stays allowed; the only false positives are commands that merely mention the literals (echo/grep), which is the identical syntactic-guard property every existing gate_bash rule already has (my own grep containing the git literals was correctly denied this session) and is documented as residual in risks[3]. No open blocker or major finding remains; approving. Note the revision budget is exhausted (2/2) and this approve is the intended terminal plan verdict.",
+  "findings": [
+    {
+      "id": "F1",
+      "category": "security",
+      "severity": "info",
+      "confidence": "high",
+      "location": "plan_v3.json M3 Part B, files[] PreToolUse gate, AC12, test_R10, revision_notes[SF1]; verified against pretooluse_gate 269-297 (wid guard 271-272, state load 279, git-push 282, git-commit 290) and heartbeat touch at 309",
+      "description": "RESOLVED (SF1 MAJOR). The confinement of 'wf accept' and 'wf clear-invocation' is now a REQUIRED, code-level PreToolUse gate deny rather than an optional prompt convention. The rule is specified to sit right after the 'if not wid: allow()' guard so it fires for any active workflow with no state load, matched via re.search on a pattern binding the token wf immediately before accept or clear-invocation, mirroring the existing git-push and git-commit denies. The liveness rationale is real (the gate runs only when hooks are live because main() touches the heartbeat before dispatch), so the deny loses no legitimate function, and hooks-dark operator recovery via the shell escape or a plain terminal is preserved. Backed by files[] (modify), AC12, and named test test_R10 asserting both commands are denied while active and a benign 'wf status' stays allowed.",
+      "recommendation": "None; resolved. Implementor: bind the token (a word-boundaried wf immediately preceding accept or clear-invocation) so the other wf subcommands are never matched, and place the rule before the state load so it needs no state.",
+      "resolves_prior_finding": "SF1"
+    },
+    {
+      "id": "F2",
+      "category": "security",
+      "severity": "info",
+      "confidence": "high",
+      "location": "plan_v3.json M4c, AC13, test_R12, scope.out, assumptions, revision_notes[SF3]",
+      "description": "RESOLVED (SF3 MINOR). The new canonical GMDW_ALLOW_UNGOVERNED is read with a hardened affirmative check accepting only an explicit member of {'1','true','yes','on'} (case-insensitive, stripped) at both transition and init, so =0 or =false fails CLOSED; test_R12 asserts =0 does not bypass while hooks are dark, and governance_liveness_bypassed is logged on every bypass. The legacy GMDW_ALLOW_UNGOVERNED_INIT keeps its loose truthiness by explicit, recorded decision (Phase-1 F-4 deferred), so shipped init behavior is unchanged.",
+      "recommendation": "None; resolved.",
+      "resolves_prior_finding": "SF3"
+    },
+    {
+      "id": "F3",
+      "category": "security",
+      "severity": "info",
+      "confidence": "high",
+      "location": "plan_v3.json revision_notes[SF2], M3 (counters untouched), M6, KNOWN_LIMITATIONS update (AC11)",
+      "description": "RESOLVED/SUBSUMED (SF2 MINOR). The SF1 hooks-live deny makes 'wf clear-invocation' unreachable in a live session, so it cannot release the single-flight lock while a subagent runs nor let a still-running SubagentStop validate against a newer open_invocation. The residual is recorded: clear-invocation is for an orphaned invocation with no running subagent, and it deliberately does not reset consecutive_failures so the escalation limit cannot be dodged.",
+      "recommendation": "None; resolved. Implementor: keep the SF1 deny's liveness keying as the gate's own execution (hooks-live) so a genuinely live run cannot clear its own in-flight lock through the gate.",
+      "resolves_prior_finding": "SF2"
+    },
+    {
+      "id": "F4",
+      "category": "security",
+      "severity": "info",
+      "confidence": "high",
+      "location": "plan_v3.json M1, M2, M5, AC3, risks[1..2], revision_notes[SF4]/[SF5]",
+      "description": "CARRIED (SF4/SF5 INFO). Extraction fidelity (top-level exception wrapper enclosing both accept_artifact and the adapter save/ok; accepted-implies-frozen) and the inherited shell=True test-rerun boundary reachable from the CLI stay code-review-time items. Both are folded into M1/M5/AC3 (with test_R13 injecting a fault strictly after schema/semantic and inside main()) and risks/KNOWN_LIMITATIONS. Not a plan defect; the dedicated Security Reviewer's SF4/SF5 verification belongs at SECURITY_REVIEW of the implementation diff.",
+      "recommendation": "At code review, verify the wrapper boundary and the accepted-implies-frozen invariant directly against the diff, and check that test_R13's fault raises after the schema/semantic stage inside main()'s body.",
+      "resolves_prior_finding": "SF4"
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "status": "pass",
+      "evidence": "Behavior-preservation oracle is the existing suite driven through the thin adapter with P3/P5/P6/13/13b named; baseline verified at 34 tests OK this session."
+    },
+    {
+      "id": "AC2",
+      "status": "pass",
+      "evidence": "accept_artifact(root, st, atype, version, *, actor=None) with the four-outcome enum is well-formed; _subject_matches is dead in subagentstop_validate (definition-only at line 64, no call) and live in the state module (calls at 311/337/379/395/417), so deleting the former and keeping the latter is correct."
+    },
+    {
+      "id": "AC3",
+      "status": "pass",
+      "evidence": "Fail-closed posture pinned by test_R13 (validator_error wrapper) and test_13 (test-rerun integrity path); the in-core integrity-hold save-and-log at subagentstop_validate around 161-171 is kept verbatim (F4/SF4). Wrapper-boundary and accepted-implies-frozen are code-review invariants, appropriately deferred."
+    },
+    {
+      "id": "AC4",
+      "status": "pass",
+      "evidence": "test_R1 reproduces wf_20260713_003 and asserts pointer advance, freeze, artifact_accepted with actor=human_recovery, dangling open_invocation cleared, and the subsequent REPOSITORY_ANALYSIS to PLANNING transition succeeding."
+    },
+    {
+      "id": "AC5",
+      "status": "pass",
+      "evidence": "Complete negative coverage for wf accept: schema-invalid (R2), non-next version (R3), already-frozen (R4), missing --by (R5), expected()==None (R6); each asserts no state change on refusal."
+    },
+    {
+      "id": "AC6",
+      "status": "pass",
+      "evidence": "test_R7 proves ESCALATED is first refused by guard() (open_invocation check at state module 252, before the ESCALATED allowance at 256) then reachable after clear-invocation; R8 (refuse and no ledger write when none open) and R9 (missing --by) cover negatives; clear-invocation touches no counters, pointers or freeze."
+    },
+    {
+      "id": "AC7",
+      "status": "pass",
+      "evidence": "test_R11 (dark-hooks refusal with transition_denied audit) and test_R12 (affirmative bypass proceeds and logs governance_liveness_bypassed; ESCALATED exempt) are testable and correct; heartbeat.status()'s F-1 skew bound is inherited."
+    },
+    {
+      "id": "AC8",
+      "status": "pass",
+      "evidence": "Allowlist {invocation_requested, invocation_completed, invocation_failed} verified at pretooluse_gate 182 and posttooluse_ledger 74/69; artifact_accepted correctly excluded (the CLI writes it at state module 484-486); OR-with-heartbeat fallback sound."
+    },
+    {
+      "id": "AC9",
+      "status": "pass",
+      "evidence": "GMDW_ALLOW_UNGOVERNED canonical at init and transition, GMDW_ALLOW_UNGOVERNED_INIT retained at init; Base.setUp heartbeat seed is the correct fix for legacy transition tests, with test_R11/R12 explicitly expiring/removing it to avoid masking."
+    },
+    {
+      "id": "AC10",
+      "status": "pass",
+      "evidence": "Final count 47 (34 preserved plus 13 new R1-R13) is consistent across every milestone verification block (M2 40, M3 44, M4 46, M5 47); 6 plus 4 plus 2 plus 1 equals 13 and 34 plus 13 equals 47; no schema or state-shape change beyond the test-only heartbeat seed."
+    },
+    {
+      "id": "AC11",
+      "status": "pass",
+      "evidence": "Doc criterion no longer overclaims: R4/F1 enumerates four closure mechanisms plus the SF1 code-confinement and the residual; the gmdw command doc mentions wf accept, wf clear-invocation, mid-run liveness, and the gate deny of both while hooks are live; both ADR-001 docs set to Accepted/Implemented."
+    },
+    {
+      "id": "AC12",
+      "status": "pass",
+      "evidence": "SF1 required control: gate_bash denies 'wf accept'/'wf clear-invocation' while active and allows unrelated wf commands; placement after the wid guard (pretooluse_gate 271-272) needs no state load and matches the git-push/commit re.search style; pinned by test_R10."
+    },
+    {
+      "id": "AC13",
+      "status": "pass",
+      "evidence": "SF3 hardened truthiness: GMDW_ALLOW_UNGOVERNED enables bypass only for an explicit affirmative in {'1','true','yes','on'}; =0/=false is refused when hooks are dark (test_R12); legacy INIT var intentionally unchanged."
+    }
+  ],
+  "security_observations": [
+    "SF1's deny is a syntactic re.search rule and, like every existing gate_bash rule, will also deny benign commands that merely mention the literals wf-accept/wf-clear-invocation (e.g. an echo or grep). This is the accepted syntactic-guard property already captured in plan risks[3] and is not a new defect; it does not affect the other wf subcommands, and test_R10 pins that 'wf status' stays allowed.",
+    "All three Security Reviewer findings (SF1 major, SF2/SF3 minor) are verified resolved against the live code; SF4/SF5 (info) stay code-review-time verifications for the implementation diff, appropriately routed to the SECURITY_REVIEW stage rather than adjudicated at plan time.",
+    "The two recovery authorities stay --by-trusted (not cryptographically verified), but the SF1 hooks-live deny makes both unreachable while hooks are live, so the trust residual only matters in a genuinely hooks-dark session where a real human is at the terminal; this is stated in the plan and needs no further plan-time action."
+  ]
+}

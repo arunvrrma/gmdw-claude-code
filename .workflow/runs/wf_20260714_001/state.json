@@ -1,0 +1,283 @@
+{
+  "schema_version": 1,
+  "workflow": {
+    "id": "wf_20260714_001",
+    "title": "Implement ADR-001 Phase 2: acceptance extraction, transition liveness, wf accept",
+    "request_ref": "request.md",
+    "created_at": "2026-07-14T12:01:09Z",
+    "created_by": "arunverma",
+    "parent_workflow_id": null
+  },
+  "policy": {
+    "profile_name": "standard",
+    "profile_snapshot_sha256": "23c3a1f088051c3ffb33acf7acfec1d899cc9f3fa8b6586edcb61cade2312d21",
+    "snapshot": {
+      "name": "standard",
+      "description": "Default GMDW governance profile. Matches the approved architecture.",
+      "routing": {
+        "t1": 3,
+        "t2": 8,
+        "flag_rules": {
+          "security": {
+            "dimension": "security",
+            "min": 2
+          },
+          "data_model": {
+            "dimension": "data_model",
+            "min": 2
+          }
+        },
+        "trivial_max_files": 3
+      },
+      "limits": {
+        "max_plan_revisions": 2,
+        "max_impl_revisions": 3,
+        "max_review_cycles": 6,
+        "max_agent_invocations": 14,
+        "per_invocation_timeout_min": 30,
+        "wall_clock_hours": 12
+      },
+      "budget": {
+        "token_budget": 2000000,
+        "soft_threshold_pct": 80,
+        "cost_ceiling_usd": 25
+      },
+      "gates": {
+        "plan_approval": {
+          "trivial": "off",
+          "medium": "notify",
+          "full": "blocking"
+        },
+        "architecture_approval": {
+          "enabled": true,
+          "trigger": {
+            "dimension": "architectural",
+            "min": 2
+          }
+        },
+        "deployment_approval": "blocking"
+      },
+      "security": {
+        "plan_review_trigger": 2,
+        "code_review_trigger": 2,
+        "always_review_plans": false
+      },
+      "verification": {
+        "rerun_tests": true,
+        "path_existence_checks": true,
+        "tamper_check_on_finalize": true
+      },
+      "models": {
+        "orchestrator": {
+          "model": "opus",
+          "effort": "high"
+        },
+        "repo-analyst": {
+          "model": "sonnet",
+          "effort": "medium"
+        },
+        "planner": {
+          "model": "opus",
+          "effort": "high"
+        },
+        "plan-reviewer": {
+          "model": "opus",
+          "effort": "high"
+        },
+        "implementor": {
+          "model": "sonnet",
+          "effort": "high"
+        },
+        "security-reviewer": {
+          "model": "opus",
+          "effort": "high"
+        },
+        "code-reviewer": {
+          "model": "opus",
+          "effort": "high"
+        },
+        "escalate_implementor_after_revisions": 1
+      },
+      "finalization": {
+        "mode": "pr",
+        "require_ci_green": false
+      }
+    }
+  },
+  "state": "REJECTED",
+  "state_entered_at": "2026-07-15T14:48:57Z",
+  "route": "full",
+  "flags": {
+    "security": true,
+    "data_model": false,
+    "budget_warning": false,
+    "integrity_hold": false
+  },
+  "counters": {
+    "plan_revisions": 2,
+    "impl_revisions": 0,
+    "review_cycles": 4,
+    "plan_reviews": 3,
+    "security_reviews": 1,
+    "code_reviews": 0,
+    "agent_invocations": 12,
+    "consecutive_failures": 0
+  },
+  "limits": {
+    "max_plan_revisions": 2,
+    "max_impl_revisions": 3,
+    "max_review_cycles": 6,
+    "max_agent_invocations": 14,
+    "per_invocation_timeout_min": 30,
+    "wall_clock_hours": 12
+  },
+  "budget": {
+    "token_budget": 2000000,
+    "tokens_consumed_estimate": 1232887,
+    "usage_by_role": {
+      "repo-analyst": 166653,
+      "planner": 688066,
+      "plan-reviewer": 209930,
+      "security-reviewer": 168238
+    },
+    "cost_usd_estimate": 10.4959,
+    "deadline": "2026-07-16T12:50:02Z"
+  },
+  "current": {
+    "classification": 1,
+    "repo_analysis": 1,
+    "plan": 3,
+    "plan_review": 3,
+    "security_review_plan": 1,
+    "implementation": 0,
+    "security_review_code": 0,
+    "code_review": 0,
+    "approval": 0
+  },
+  "plan_approved": false,
+  "approvals": [
+    {
+      "gate": "escalation",
+      "decision": "approved",
+      "by": "arunverma",
+      "at": "2026-07-15T14:48:57Z",
+      "artifact_ref": "artifacts/approvals/escalation_1.json",
+      "notes": "Checkpoint export of ADR-001 Phase 2 work; plan_v3 approved+security-hardened; abandoning to start fresh next session. Findings in handoff."
+    }
+  ],
+  "escalations": [
+    {
+      "at": "2026-07-15T14:48:48Z",
+      "from_state": "PLAN_SECURITY_REVIEW",
+      "reason": "budget",
+      "detail": "Operator checkpoint: budgets exhausted after security replan + infra interruptions; findings exported to handoff; abandoning this run to enable a fresh session from plan_v3",
+      "resolution": "abandon",
+      "resolved_at": "2026-07-15T14:48:57Z"
+    }
+  ],
+  "history": [
+    {
+      "ts": "2026-07-14T12:01:09Z",
+      "from": "-",
+      "to": "RECEIVED",
+      "trigger": "init",
+      "actor": "orchestrator"
+    },
+    {
+      "ts": "2026-07-14T12:01:16Z",
+      "from": "RECEIVED",
+      "to": "CLASSIFYING",
+      "trigger": "init",
+      "actor": "orchestrator"
+    },
+    {
+      "ts": "2026-07-14T12:02:28Z",
+      "from": "CLASSIFYING",
+      "to": "REPOSITORY_ANALYSIS",
+      "trigger": ".workflow/runs/wf_20260714_001/artifacts/classification_v1.json",
+      "actor": "orchestrator"
+    },
+    {
+      "ts": "2026-07-14T12:18:50Z",
+      "from": "REPOSITORY_ANALYSIS",
+      "to": "PLANNING",
+      "trigger": ".workflow/runs/wf_20260714_001/artifacts/repo_analysis_v1.json",
+      "actor": "orchestrator"
+    },
+    {
+      "ts": "2026-07-14T13:10:39Z",
+      "from": "PLANNING",
+      "to": "PLAN_REVIEW",
+      "trigger": ".workflow/runs/wf_20260714_001/artifacts/plan_v1.json",
+      "actor": "orchestrator"
+    },
+    {
+      "ts": "2026-07-14T20:38:23Z",
+      "from": "PLAN_REVIEW",
+      "to": "PLANNING",
+      "trigger": ".workflow/runs/wf_20260714_001/artifacts/plan_review_v1.json",
+      "actor": "orchestrator"
+    },
+    {
+      "ts": "2026-07-14T20:48:06Z",
+      "from": "PLANNING",
+      "to": "PLAN_REVIEW",
+      "trigger": ".workflow/runs/wf_20260714_001/artifacts/plan_v2.json",
+      "actor": "orchestrator"
+    },
+    {
+      "ts": "2026-07-14T20:53:12Z",
+      "from": "PLAN_REVIEW",
+      "to": "PLAN_SECURITY_REVIEW",
+      "trigger": ".workflow/runs/wf_20260714_001/artifacts/plan_review_v2.json",
+      "actor": "orchestrator"
+    },
+    {
+      "ts": "2026-07-14T21:03:03Z",
+      "from": "PLAN_SECURITY_REVIEW",
+      "to": "PLANNING",
+      "trigger": ".workflow/runs/wf_20260714_001/artifacts/security_review_plan_v1.json",
+      "actor": "orchestrator"
+    },
+    {
+      "ts": "2026-07-15T13:18:51Z",
+      "from": "PLANNING",
+      "to": "PLAN_REVIEW",
+      "trigger": ".workflow/runs/wf_20260714_001/artifacts/plan_v3.json",
+      "actor": "orchestrator"
+    },
+    {
+      "ts": "2026-07-15T13:25:35Z",
+      "from": "PLAN_REVIEW",
+      "to": "PLAN_SECURITY_REVIEW",
+      "trigger": ".workflow/runs/wf_20260714_001/artifacts/plan_review_v3.json",
+      "actor": "orchestrator"
+    },
+    {
+      "ts": "2026-07-15T14:48:48Z",
+      "from": "PLAN_SECURITY_REVIEW",
+      "to": "ESCALATED",
+      "trigger": "checkpoint-export",
+      "actor": "orchestrator"
+    },
+    {
+      "ts": "2026-07-15T14:48:57Z",
+      "from": "ESCALATED",
+      "to": "REJECTED",
+      "trigger": ".workflow/runs/wf_20260714_001/artifacts/approvals/escalation_1.json",
+      "actor": "orchestrator"
+    }
+  ],
+  "open_invocation": null,
+  "last_invocation": {
+    "agent": "security-reviewer",
+    "started_at": "2026-07-15T13:26:02Z",
+    "expected_artifact": ".workflow/runs/wf_20260714_001/artifacts/security_review_plan_v2.json",
+    "expected_type": "security_review_plan",
+    "version": 2,
+    "retries": 0,
+    "closed_at": "2026-07-15T13:34:58Z",
+    "errored": null,
+    "tokens": 69989
+  }
+}

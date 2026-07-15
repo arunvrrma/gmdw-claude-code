@@ -1,0 +1,136 @@
+{
+  "artifact_type": "plan_review",
+  "workflow_id": "wf_20260714_001",
+  "version": 1,
+  "produced_by": "plan-reviewer",
+  "input_artifact_refs": [
+    ".workflow/runs/wf_20260714_001/request.md",
+    ".workflow/runs/wf_20260714_001/artifacts/plan_v1.json",
+    ".workflow/runs/wf_20260714_001/artifacts/repo_analysis_v1.json",
+    "docs/adr/ADR-001-phase2-plan.md",
+    "docs/adr/ADR-001-artifact-acceptance-and-hook-liveness.md"
+  ],
+  "created_at": "2026-07-14T14:10:00Z",
+  "status": "complete",
+  "mode": "plan",
+  "subject_ref": ".workflow/runs/wf_20260714_001/artifacts/plan_v1.json",
+  "verdict": "revise",
+  "verdict_rationale": "The plan is well-grounded, correctly sequences the safety-critical accept-pipeline extraction ahead of any new capability, and its core reasoning is verified against the real code: the dead _subject_matches in the SubagentStop validator is truly uncalled (definition only; the accept pipeline never invokes it) while the state-module copy is live at five guard() sites, so deleting the former and NOT copying it into accept.py is correct; excluding artifact_accepted from the liveness allowlist is correct because the CLI writes that event with actor=orchestrator (state.py:484-486); and restricting wf accept to expected()'s next version plus a frozen-check genuinely prevents re-accepting frozen or arbitrary versions. Direction is correct. One MAJOR completeness gap blocks approval: the plan claims the recovery exits (ESCALATED/FAILED/REJECTED) stay reachable when hooks are dark, but the pre-existing guard() open_invocation check (state.py:252) refuses those transitions BEFORE the ESCALATED allowance (state.py:256) and before any liveness exemption cmd_transition applies, so the exact orphaned-invocation deadlock this session hit is neither detected, recovered, nor even recorded. That is fixable by scoping in a minimal orphaned-invocation recovery, or by honestly recording the residual limitation and correcting the closure claims. Minor findings on test placement, the M1 save-state contract wording, and a security flag for the new CLI acceptance authority round out the revision.",
+  "findings": [
+    {
+      "id": "F1",
+      "category": "completeness",
+      "severity": "major",
+      "confidence": "high",
+      "location": "plan_v1.json milestones M3 and acceptance_criteria AC7 and assumptions; grounded in state.py guard() line 252 versus line 256, pretooluse_gate.py:171",
+      "description": "The plan asserts recovery exits remain reachable when hooks are dark (M3 rationale 'recovery exits must always be reachable', the ESCALATED/FAILED/REJECTED liveness exemption, and the assumption listing them as exempt). This is false for the exact deadlock this session hit. guard() checks open_invocation FIRST (state.py:252) and returns 'an agent invocation is still open; cannot transition' BEFORE the ESCALATED allowance (state.py:256) and before any liveness exemption cmd_transition adds. An interrupted invocation that leaves a dangling open_invocation without a recoverable artifact cannot be escaped: wf transition ESCALATED is refused by guard(); wf accept clears open_invocation ONLY on a successful accept, so with no valid expected-version artifact on disk it refuses and leaves the invocation dangling; and PreToolUse single-flight (pretooluse_gate.py:171) blocks any new invocation. Net: a genuine deadlock the plan implies it closes. Item 2 even trades one misleading guard message ('repo_analysis artifact required') for another ('an agent invocation is still open') in precisely this case. wf accept recovers stranded ARTIFACTS but not orphaned INVOCATIONS, and the omission is silent.",
+      "recommendation": "Either (a) bring a minimal orphaned-invocation recovery into Phase 2 scope: a --by-attributed, ledger-logged CLI action that clears a confirmed-dead open_invocation (human attribution as the compensating control), or let ESCALATED/FAILED proceed despite a dangling open_invocation when the liveness exemption already applies, with a regression test pinning it; or (b) if deferring, record this residual deadlock explicitly in scope.out, soften the 'always reachable' wording in M3/AC7/assumptions to 'reachable once open_invocation is cleared', stop claiming R4/F1 is 'closed end-to-end' in M5/AC11 while the deadlock stands, and insert a KNOWN_LIMITATIONS entry naming it. Silent omission is the defect; either path resolves it."
+    },
+    {
+      "id": "F2",
+      "category": "testing",
+      "severity": "minor",
+      "confidence": "high",
+      "location": "plan_v1.json milestone verification blocks M2, M3, M4",
+      "description": "The milestone verification steps contradict each other about where the new tests land and are not satisfiable in the stated sequence. M2 verification claims the five wf-accept tests are 'introduced in this milestone' and the suite reports at least 39 tests; M3 verification claims test_R6 and test_R7 'from M4' pass during M3; but M4's description states all seven test_R1..test_R7 are introduced in M4. Tests cannot run or pass in M2/M3 if they are introduced only in M4.",
+      "recommendation": "Make test placement explicit and monotonic: land test_R1..test_R5 with M2 and test_R6..test_R7 with M3 (each capability ships with its own test), and treat M4 as the consolidated 41-test green gate; alternatively, state that all seven tests land in M4 and drop the at-least-39 count and the R6/R7 references from M2/M3 verification, gating those milestones on the 34-test oracle only."
+    },
+    {
+      "id": "F3",
+      "category": "feasibility",
+      "severity": "info",
+      "confidence": "high",
+      "location": "plan_v1.json risks[3], assumptions (event names unverified), and M3/AC8 allowlist",
+      "description": "The plan flags the exact hook-sourced event names as unverified and defers them to the implementor. Verified this pass so the risk can be retired: PostToolUse writes invocation_completed (posttooluse_ledger.py:74) and invocation_failed (line 69); PreToolUse writes invocation_requested (pretooluse_gate.py:182) and budget_warning (line 163); PostToolUse also writes artifact_written (line 107), which is hook-only. artifact_accepted is written by the state-module/CLI path with actor=orchestrator (state.py:484-486), so the plan's exclusion of it from the allowlist is correct.",
+      "recommendation": "Set the hook-sourced allowlist to invocation_requested, invocation_completed, invocation_failed (optionally also artifact_written to cover orchestrator-Write-only steps such as classification, and budget_warning); never include artifact_accepted. This closes risk R3. The heartbeat OR-fallback is a strong safety net: in a live session the very Bash call that invokes wf transition fires PreToolUse touch first, so the heartbeat is fresh at the moment wf reads it, making false mid-run refusals essentially impossible."
+    },
+    {
+      "id": "F4",
+      "category": "correctness",
+      "severity": "minor",
+      "confidence": "high",
+      "location": "plan_v1.json M1 core contract; subagentstop_validate.py:160-171",
+      "description": "The M1 contract says 'the core does NOT call S.save_state' and defines accept_artifact(..., rerun_tests), yet also mandates moving _semantic verbatim. _semantic's test-rerun branch DOES call S.save_state and ledger.log directly (lines 161-171) and reads rerun_tests from st internally, not from a parameter. Read literally, 'core does not save state' conflicts with 'move _semantic verbatim', and the rerun_tests parameter is redundant with _semantic's internal read. An implementor resolving the tension by normalizing the side effect would change on-disk behavior and break the integrity-hold oracle (tests 13/13b).",
+      "recommendation": "State explicitly that _semantic's internal integrity-hold side effects (the save plus integrity_violation and verification ledger writes at lines 161-171) are the one intentional exception to 'core does not save or log' and MUST NOT be normalized; and either drop the rerun_tests parameter (let _semantic keep reading it from st) or thread it into _semantic consistently. Keep the accept-plane save in the adapter as planned. The net final workflow-state file, artifact registry, and decision log stay identical, which is what the oracle asserts."
+    },
+    {
+      "id": "F5",
+      "category": "security",
+      "severity": "minor",
+      "confidence": "medium",
+      "location": "plan_v1.json scope.out (PreToolUse deny deferred) and risks[4]; wf cmd_accept (M2)",
+      "description": "wf accept is a new code-level acceptance authority strictly more powerful than wf approve: approve only writes an approval artifact, whereas accept advances current[atype], bumps counters, and freezes core plan/impl/review artifacts. That is the exact authority ADR-001 deliberately moved out of prompt-space into the hook. It is callable by the Bash-holding Orchestrator, and the plan explicitly declines (scope.out) the optional PreToolUse Bash deny that would confine it to hook-dark recovery. In a live session, where recovery is not needed, nothing at the code layer stops the Orchestrator from self-accepting via wf accept; --by is trusted, not verified.",
+      "recommendation": "Flagging for the dedicated Security Reviewer (not adjudicated here). Have that review assess whether the compensating controls (identical core validation, expected-next-version-only, frozen-check, required --by, distinct human_recovery actor) are sufficient, or whether the PreToolUse deny of wf accept while hooks show live should be pulled into scope as defense-in-depth. Recorded as category security so the Orchestrator triggers the Security Reviewer."
+    },
+    {
+      "id": "F6",
+      "category": "testing",
+      "severity": "minor",
+      "confidence": "medium",
+      "location": "plan_v1.json AC3 and M2 cmd_accept expected()==None path and M4 test_R1",
+      "description": "Two behavior-preservation and edge claims lack a named backing test. AC3 (the fail-closed top-level wrapper still sets integrity_hold and logs validator_error; a test-rerun mismatch still sets integrity_hold) names no specific test method, and the plan does not name an existing test that exercises the validator_error wrapper. cmd_accept's clean refusal when expected() is None (terminal or approval states) is specified but untested.",
+      "recommendation": "Name the existing test(s) covering the integrity-hold and fail-closed wrapper behavior, or introduce one; include a test that wf accept refuses cleanly in a state where expected() is None; and assert in test_R1 that a successful wf accept clears a dangling open_invocation, so the recovery side effect is pinned."
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "status": "pass",
+      "evidence": "Sound oracle: the existing 34-test suite driven through the thin adapter, with P3/P5/P6/13/13b named, is the correct behavior-preservation gate; count 34 verified this pass."
+    },
+    {
+      "id": "AC2",
+      "status": "pass",
+      "evidence": "Verifiable and grounded: _subject_matches is dead in subagentstop_validate.py (definition-only, no call) and live at five state.py sites; accept_artifact contract is well-formed."
+    },
+    {
+      "id": "AC3",
+      "status": "pass",
+      "evidence": "Verifiable in principle; see F6 - no specific test method is named for the validator_error fail-closed wrapper or the integrity-hold path."
+    },
+    {
+      "id": "AC4",
+      "status": "pass",
+      "evidence": "Well-formed; reproduces wf_20260713_003. See F6 recommendation to also assert open_invocation is cleared."
+    },
+    {
+      "id": "AC5",
+      "status": "pass",
+      "evidence": "Well-formed negative-path coverage (schema-invalid, wrong-version, already-frozen, missing --by); expected()-next-version mechanism makes wrong-version refusal correct."
+    },
+    {
+      "id": "AC6",
+      "status": "pass",
+      "evidence": "Well-formed; the transition_denied audit-log template already exists at wf:141 for mid-run refusals."
+    },
+    {
+      "id": "AC7",
+      "status": "pass",
+      "evidence": "The liveness-exemption criterion is testable and correct. Caveat per F1: exemption from the liveness check does NOT equal reachability, because guard()'s open_invocation check (state.py:252) still blocks ESCALATED/FAILED/REJECTED."
+    },
+    {
+      "id": "AC8",
+      "status": "pass",
+      "evidence": "Allowlist reasoning confirmed correct (F3): artifact_accepted rightly excluded (CLI writes it, state.py:484-486); OR-with-heartbeat is sound."
+    },
+    {
+      "id": "AC9",
+      "status": "pass",
+      "evidence": "Bypass reconciliation (GMDW_ALLOW_UNGOVERNED canonical, _INIT retained) matches request constraint and F-8; Base.setUp heartbeat seed is the correct fix for legacy transition tests."
+    },
+    {
+      "id": "AC10",
+      "status": "pass",
+      "evidence": "Final count 41 (34+7) is coherent and consistent across M4/M5; no schema or state-shape change beyond the test heartbeat seed. Intermediate counts inconsistent per F2."
+    },
+    {
+      "id": "AC11",
+      "status": "pass",
+      "evidence": "Doc criterion is verifiable. Caveat per F1: 'closed end-to-end' overstates closure while the orphaned open_invocation deadlock remains unaddressed and unrecorded."
+    }
+  ],
+  "security_observations": [
+    "wf accept introduces a CLI path to the core acceptance authority (pointer advance + freeze) that is more powerful than wf approve and is not gated by a PreToolUse deny while hooks are live; routed to the Security Reviewer via finding F5.",
+    "The extracted accept core inherits the existing shell=True test-rerun boundary (subagentstop_validate.py:147-171) and the git merge-base ancestry check with an unvalidated base string; wf accept makes both reachable from a human-run CLI recovery. Same trust boundary as today, but now reachable from a second entry point - worth the Security Reviewer's confirmation."
+  ]
+}

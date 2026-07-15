@@ -1,0 +1,32 @@
+{
+  "artifact_type": "classification",
+  "workflow_id": "wf_20260714_001",
+  "version": 1,
+  "produced_by": "orchestrator",
+  "input_artifact_refs": [
+    ".workflow/runs/wf_20260714_001/request.md",
+    "docs/adr/ADR-001-phase2-plan.md",
+    "docs/adr/ADR-001-artifact-acceptance-and-hook-liveness.md"
+  ],
+  "created_at": "2026-07-14T12:02:30Z",
+  "status": "complete",
+  "scores": {
+    "files_impacted": 3,
+    "architectural": 3,
+    "security": 2,
+    "data_model": 1,
+    "integrations": 1,
+    "testing": 2
+  },
+  "total": 12,
+  "override_flags": ["security"],
+  "route": "full",
+  "route_rationale": "Phase 2 modifies GMDW's governance enforcement plane itself. files_impacted=3: new gmdw/accept.py, a rewritten subagentstop_validate.py adapter, the wf CLI (transition liveness + a new wf accept subcommand), state.py, tests/test_governance.py, and docs (5-7 files). architectural=3: the core change is relocating artifact-acceptance authority from the SubagentStop hook into repository-scoped core and adding a mid-run liveness predicate -- a deliberate responsibility re-layering. security=2: this is the enforcement code that gates every artifact; a defect could accept ungoverned work, and wf accept is a new privileged state-mutating command with a liveness bypass -- so the security override flag is set, forcing full route with plan and code security reviews. data_model=1: no schema or state-shape changes (only a new ledger actor value and event; a test-only heartbeat seed). integrations=1: internal only (Claude Code hooks, wf CLI, ledger). testing=2: behavior-preserving refactor needs the existing suite as oracle plus new wf accept and mid-run-liveness tests. Total 12 (>8) already routes to full; the security flag independently forces full.",
+  "evidence": [
+    "docs/adr/ADR-001-phase2-plan.md: authoritative four-work-item plan",
+    ".claude/hooks/subagentstop_validate.py: 282 lines, holds the accept pipeline to be extracted",
+    ".workflow/bin/wf: 332 lines, gains transition liveness check + wf accept subcommand",
+    ".claude/hooks/gmdw/state.py: 603 lines, transition() is where mid-run liveness is checked",
+    ".claude/hooks/gmdw/heartbeat.py: Phase 1 status() to be reused by the transition predicate"
+  ]
+}
