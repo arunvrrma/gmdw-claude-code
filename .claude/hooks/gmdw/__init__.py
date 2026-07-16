@@ -6,4 +6,4 @@ Code hooks and by the `wf` CLI. It is the ONLY code path that may mutate
 """
 
 __all__ = ["state", "policy", "schemas", "ledger", "heartbeat"]
-__version__ = "1.0.0"
+__version__ = "0.2.0"

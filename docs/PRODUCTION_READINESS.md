@@ -1,5 +1,10 @@
 # GMDW — Production Readiness Review
 
+> **Historical (MVP / v0.1.0).** This is the MVP-era assessment. For the current
+> general-use (v0.2.0) re-score — several gaps below are now closed (the silent
+> hook-non-firing risk, the manual orphan-clear) — see
+> [`RELEASE_READINESS.md`](RELEASE_READINESS.md).
+
 Assessment of the MVP against five readiness dimensions. Scores are `0–5`
 (0 = absent, 3 = works but unproven live, 5 = proven and operable). The dominant theme:
 the **logic** is complete and verified offline; **live wiring** is the gating unknown.

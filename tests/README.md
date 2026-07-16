@@ -6,7 +6,9 @@ them the same stdin JSON Claude Code sends) and the real `wf` CLI against a thro
 copy of the repo, then asserts the deny/block decision, the resulting state, and the
 audit record.
 
-Run: `python3 tests/test_governance.py` (stdlib `unittest`, no dependencies).
+Run: `python3 tests/test_governance.py` (stdlib `unittest`, no dependencies). The
+suite currently has **50 tests**; the tables below list the core scenarios, and the
+v0.2.0 additions are summarized at the end.
 
 | # | Scenario | Exercised via | Expected response |
 |---|---|---|---|
@@ -29,3 +31,20 @@ Positive controls (prove the gate is not merely always-denying):
 | P1 | Legal agent invocation at the correct state with a valid header | allow; open_invocation set; agent_invocations++ |
 | P2 | Implementor writes a planned file in IMPLEMENTING | allow |
 | P3 | Valid artifact accepted by SubagentStop | accepted; current pointer advances; artifact frozen |
+
+## v0.2.0 additions
+
+Beyond the core scenarios above, the suite now also covers (still driving the real
+hooks + `wf` CLI):
+
+- **P4–P6** — orchestrator-written classification acceptance; second-invocation
+  validation against the active invocation; in-invocation correction re-validated.
+- **Governance liveness — L1–L11 (ADR-001 Phase 1 / Phase 3).** `wf init` refuses when
+  the hooks are dark; the heartbeat self-attests; stale / future-dated / small-skew
+  handling; `wf doctor` reports live vs dark read-only.
+- **Recovery + mid-run liveness — R1–R13 (ADR-001 Phase 2).** `wf accept` unstrands a
+  valid artifact and refuses invalid / wrong-version / frozen / `--by`-less inputs;
+  `wf clear-invocation` releases an orphaned lock and re-enables `ESCALATED`; both
+  recovery commands are gate-denied while the hooks are live; a mid-run transition
+  refuses when the plane is dark and logs the audited bypass; the fail-closed validator
+  wrapper still engages on internal error.
