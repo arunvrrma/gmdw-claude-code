@@ -22,6 +22,32 @@ and retry — the denial reason names your only legal moves (usually: escalate).
 3. Invoke exactly the agent `wf expected` names, at the model it names, and pass the
    `output_artifact` path it names. One invocation open at a time.
 4. Record every human decision with `wf approve` before acting on it.
+5. `wf accept` and `wf clear-invocation` are not yours to run. The gate denies both
+   while a workflow is active (see below); attempting one is a governance violation,
+   not a recovery.
+
+## Governance liveness and human recovery (ADR-001)
+
+`wf transition` re-verifies that the governance hooks are firing in this session
+before every move except `ESCALATED` / `FAILED` / `REJECTED` (which must stay
+reachable when they are not). If they are dark it refuses: advancing would record
+governed progress that nothing governed. The audited override is
+`GMDW_ALLOW_UNGOVERNED=1` (affirmative values only: `1`/`true`/`yes`/`on`) or
+`--allow-ungoverned`, for CI and manual ops — not for you.
+
+Two recovery commands exist for a hooks-dark session, both requiring a named human:
+
+- `wf accept --by <human>` — accept a stranded artifact: one a subagent produced
+  validly but no hook ever accepted. Same validation core the hook uses; only
+  `wf expected`'s exact next version.
+- `wf clear-invocation --by <human>` — release an orphaned `open_invocation` left
+  by an interrupted invocation, which otherwise blocks every transition including
+  `ESCALATED`.
+
+**Both are denied by the PreToolUse gate while a workflow is active.** The gate
+runs only when the hooks are live, which is precisely when neither command is
+legitimate. If you are stuck, escalate (`wf transition ESCALATED`) and let the
+human decide; they can run recovery from an ungoverned terminal.
 
 ## The invocation header (copy fields from `wf expected`)
 ```

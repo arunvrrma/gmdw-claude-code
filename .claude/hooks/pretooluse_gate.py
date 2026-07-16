@@ -258,6 +258,11 @@ def gate_write(root: Path, wid: str | None, ti: dict, cwd: str):
 
 _MUTATION_TOKENS = ("rm ", "rm\t", "mv ", "cp ", "sed -i", "chmod",
                     "chattr", "truncate", "dd ", "unlink", "shred", "> ", ">>")
+# The wf recovery authorities, matched like the git-push / git-commit rules
+# below. \bwf\b also matches an invoked path ('.workflow/bin/wf accept'), while
+# leaving every other wf subcommand ('wf status', 'wf expected') untouched.
+_RECOVERY_CMD_RE = re.compile(r"\bwf\s+(accept|clear-invocation)\b")
+
 _PROTECTED_SUBSTRINGS = ("state.json", "decision_log.jsonl", "artifacts_index.json",
                          ".workflow/bin", ".workflow/schemas", ".workflow/policies",
                          ".workflow/ACTIVE", ".workflow/config.json",
@@ -270,6 +275,24 @@ def gate_bash(root: Path, wid: str | None, ti: dict):
     cmd = ti.get("command", "") or ""
     if not wid:
         allow()
+
+    # 'wf accept' / 'wf clear-invocation' are human recovery commands for a
+    # session whose hooks are NOT firing. This gate only executes when the hooks
+    # ARE firing, so its own execution proves the recovery case does not apply:
+    # here the commands can only be an attempt to self-accept an artifact or to
+    # release the single-flight lock, bypassing invocation gating entirely.
+    # Denying loses no legitimate function — in a genuinely hooks-dark session
+    # this gate never runs, and an operator reaches the commands through the '!'
+    # shell escape or a plain terminal, neither of which is gated.
+    if _RECOVERY_CMD_RE.search(cmd):
+        deny("'wf accept' / 'wf clear-invocation' are human recovery commands "
+             "for sessions where the governance hooks are NOT firing. This gate "
+             "is running, which proves they ARE firing, so these commands are "
+             "never legitimate here: artifacts are accepted only by the "
+             "SubagentStop validator, and an open invocation is released only by "
+             "the agent that owns it. If a workflow is genuinely stuck, escalate "
+             "(wf transition ESCALATED) or run recovery from an ungoverned "
+             "terminal.")
 
     if any(s in cmd for s in _PROTECTED_SUBSTRINGS) and \
             any(t in cmd for t in _MUTATION_TOKENS):

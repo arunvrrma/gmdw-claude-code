@@ -3,30 +3,27 @@
 
 When a subagent finishes, this hook decides whether its artifact is ACCEPTED
 (advancing the workflow) or REJECTED (a failed invocation the Orchestrator may
-retry once). It performs, in order:
+retry once). The decision itself — existence, schema, semantic cross-checks,
+counter bumps, pointer update, freeze — lives in gmdw/accept.py, which `wf
+accept` shares, so the hook and the human recovery path validate identically.
 
-  1. expected-artifact existence
-  2. envelope + type schema validation
-  3. type-specific semantic cross-checks (path existence, subject match,
-     verdict consistency, deviation scope, test re-verification)
-  4. counter bumps (plan_revisions / impl_revisions / review_cycles / …)
-  5. current-pointer update + freeze (chmod a-w + hash registry)
+This hook is the session-plane adapter around that core: it resolves which
+artifact the finished invocation owed, translates the core's Result into the
+"block" reason channel the model reads, and owns the invocation lifecycle
+(open_invocation, consecutive_failures) and the state save.
 
 FAIL-CLOSED: on rejection it bumps consecutive_failures and logs the reason;
 it does not advance any pointer. On internal error while a workflow is active
-it records an integrity_hold. It uses the "block" reason channel to push the
-rejection reason back to the model.
+it records an integrity_hold.
 """
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gmdw import heartbeat, ledger, schemas  # noqa: E402
+from gmdw import accept, heartbeat, ledger  # noqa: E402
 from gmdw import state as S       # noqa: E402
 from gmdw.state import GmdwError  # noqa: E402
 
@@ -58,124 +55,6 @@ def _fail(root, wid, st, reason: str, event: str, **extra):
 
 
 # --------------------------------------------------------------------------- #
-# Semantic checks per artifact type
-# --------------------------------------------------------------------------- #
-
-def _subject_matches(review: dict, atype: str, version: int) -> bool:
-    subject = str(review.get("subject_ref", ""))
-    if atype == "implementation":
-        return f"implementation_v{version}/" in subject or \
-               subject.endswith(f"implementation_v{version}")
-    return subject.endswith(f"{atype}_v{version}.json")
-
-
-def _semantic(root: Path, st: dict, atype: str, version: int, artifact: dict,
-              run_rel: str) -> str | None:
-    """Return an error string if the artifact is semantically invalid."""
-    prof = st["policy"]["snapshot"]
-    verify = prof["verification"]
-    wdir = S.workflow_dir(root, st["workflow"]["id"])
-
-    if atype == "repo_analysis" and verify.get("path_existence_checks", True):
-        for group in ("relevant_modules", "conventions", "security_surfaces"):
-            for item in artifact.get(group, []):
-                ev = str(item.get("evidence", "")).split(":")[0].strip()
-                if ev and "/" in ev and not (Path(root) / ev).exists():
-                    return f"evidence path does not exist: {ev}"
-
-    if atype == "plan":
-        if verify.get("path_existence_checks", True):
-            for f in artifact.get("files", []):
-                if f.get("action") == "modify" and not (Path(root) / f["path"]).exists():
-                    return f"plan modifies a non-existent file: {f['path']}"
-        if version > 1:
-            prior = S.load_artifact(root, st, "plan_review", st["current"]["plan_review"])
-            sprior = S.load_artifact(root, st, "security_review_plan",
-                                     st["current"]["security_review_plan"])
-            must = set()
-            for rev in (prior, sprior):
-                if rev:
-                    key = "findings"
-                    for fnd in rev.get(key, []):
-                        if fnd.get("severity") in ("blocker", "major"):
-                            must.add(fnd["id"])
-            covered = {rn.get("finding_id") for rn in artifact.get("revision_notes", [])}
-            missing = must - covered
-            if missing:
-                return f"revision does not address findings: {sorted(missing)}"
-
-    if atype in ("plan_review", "code_review", "security_review_plan",
-                 "security_review_code"):
-        verdict = artifact.get("verdict")
-        findings = artifact.get("findings", [])
-        open_bm = [f for f in findings if f.get("severity") in ("blocker", "major")]
-        if verdict == "approve" and open_bm:
-            return f"verdict 'approve' with open blocker/major findings: " \
-                   f"{[f['id'] for f in open_bm]}"
-        if atype in ("security_review_plan", "security_review_code"):
-            if not artifact.get("checked"):
-                return "security review must record checked[] areas (non-empty)"
-        if atype == "code_review" and st["route"] != "trivial":
-            if not artifact.get("acceptance_criteria"):
-                return "code_review must evaluate acceptance_criteria"
-
-    if atype == "implementation":
-        base = artifact.get("base_commit", "")
-        # base_commit must be an ancestor of HEAD (or HEAD itself)
-        try:
-            r = subprocess.run(["git", "merge-base", "--is-ancestor", base, "HEAD"],
-                               cwd=root, capture_output=True, timeout=15)
-            if r.returncode not in (0,):
-                return f"base_commit {base[:12]} is not an ancestor of HEAD " \
-                       f"(stale workspace / concurrent change)"
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass  # no git or timeout: skip ancestry, other checks still apply
-
-        # scope: changed files subset of plan.files ∪ tests ∪ docs ∪ deviations
-        if st["route"] != "trivial":
-            plan = S.load_artifact(root, st, "plan")
-            planned = {f["path"] for f in (plan or {}).get("files", [])}
-            devs = {d["what"] for d in artifact.get("deviations", [])}
-            for ch in artifact.get("changes", []):
-                p = ch["path"]
-                if p in planned or p.startswith(("tests/", "test/", "docs/")):
-                    continue
-                if any(p in d or d in p for d in devs):
-                    continue
-                return f"changed file outside plan scope and undeclared: {p}"
-
-        # test re-verification (profile-gated) — the highest-severity check
-        if verify.get("rerun_tests", True):
-            declared = artifact.get("tests", {}).get("result")
-            cmd = artifact.get("tests", {}).get("command", "").strip()
-            if declared in ("pass", "fail") and cmd:
-                try:
-                    r = subprocess.run(cmd, cwd=root, shell=True,
-                                       capture_output=True, timeout=300)
-                    observed = "pass" if r.returncode == 0 else "fail"
-                except subprocess.TimeoutExpired:
-                    observed = "timeout"
-                except OSError:
-                    observed = None
-                if observed and observed != declared:
-                    st["flags"]["integrity_hold"] = True
-                    S.save_state(root, st["workflow"]["id"], st)
-                    ledger.log(root, st["workflow"]["id"], "integrity_violation",
-                               check="tests_rerun", declared=declared,
-                               observed=observed, command=cmd)
-                    return (f"INTEGRITY VIOLATION: manifest reports tests "
-                            f"'{declared}' but re-run observed '{observed}'. "
-                            f"Workflow frozen; human escalation required.")
-                ledger.log(root, st["workflow"]["id"], "verification",
-                           check="tests_rerun", declared=declared, observed=observed,
-                           command=cmd)
-    return None
-
-
-# --------------------------------------------------------------------------- #
-
-REVIEW_TO_ATYPE_COUNTER = S.REVIEW_COUNTER
-
 
 def main():
     data = json.load(sys.stdin)
@@ -205,58 +84,27 @@ def main():
     if not atype or not version:
         ok()
 
-    run_rel = S.artifact_relpath(atype, version)
-    full = S.workflow_dir(root, wid) / run_rel
+    res = accept.accept_artifact(root, st, atype, version)
 
-    # 1. existence
-    if not full.exists():
-        _fail(root, wid, st, f"expected artifact not produced: {run_rel}",
-              "artifact_missing", path=run_rel)
-
-    # 2. schema
-    try:
-        artifact = json.loads(full.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        _fail(root, wid, st, f"artifact is not valid JSON: {e}",
-              "artifact_invalid", path=run_rel)
-    errs = schemas.validate_artifact(root, artifact, atype)
-    if errs:
-        _fail(root, wid, st, "schema validation failed: " + "; ".join(errs[:5]),
-              "artifact_invalid", path=run_rel, errors=errs[:8])
-
-    # blocked-status artifacts are a clean "agent could not complete" signal
-    if artifact.get("status") == "blocked":
+    if res.outcome == "blocked":
+        # The agent declared it could not finish: release the invocation so the
+        # Orchestrator can escalate, but advance nothing.
         st["open_invocation"] = None
         S.save_state(root, wid, st)
-        ledger.log(root, wid, "artifact_blocked", path=run_rel,
-                   reason=artifact.get("blocked_reason", ""))
-        block(f"agent reported blocked: {artifact.get('blocked_reason','')}. "
-              f"Escalate (wf transition ESCALATED).")
+        ledger.log(root, wid, res.event, **res.extra)
+        block(res.reason)
 
-    # 3. semantics
-    sem = _semantic(root, st, atype, version, artifact, run_rel)
-    if sem:
-        _fail(root, wid, st, sem, "artifact_rejected", path=run_rel)
+    if not res.accepted:
+        # rejected and integrity_hold take the same session-plane path; the
+        # integrity flag and its integrity_violation event were already written
+        # (and saved) inside the core.
+        _fail(root, wid, st, res.reason, res.event, **res.extra)
 
-    # 4. counters
-    if atype == "plan" and version > 1:
-        st["counters"]["plan_revisions"] += 1
-    if atype == "implementation" and version > 1:
-        st["counters"]["impl_revisions"] += 1
-    if atype in REVIEW_TO_ATYPE_COUNTER:
-        st["counters"]["review_cycles"] += 1
-        st["counters"][REVIEW_TO_ATYPE_COUNTER[atype]] = \
-            st["counters"].get(REVIEW_TO_ATYPE_COUNTER[atype], 0) + 1
-
-    # 5. accept: update pointer, freeze, clear invocation, reset failures
-    st["current"][atype] = version
+    # accepted: the core advanced the pointer and froze the artifact; close out
+    # the invocation and persist.
     st["counters"]["consecutive_failures"] = 0
     st["open_invocation"] = None
     S.save_state(root, wid, st)
-    S.freeze_artifact(root, wid, run_rel, st["state"])
-    verdict = artifact.get("verdict")
-    ledger.log(root, wid, "artifact_accepted", type=atype, version=version,
-               verdict=verdict)
     ok()
 
 

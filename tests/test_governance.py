@@ -55,6 +55,12 @@ class Base(unittest.TestCase):
         _git(self.tmp, "commit", "-m", "seed")
         self.wid = S.create_workflow(self.tmp, "Test request\nbody", "Test",
                                      "tester", self.profile)
+        # Seed a fresh governance heartbeat: these tests drive a workflow that is
+        # meant to be governed, so the session they simulate is one where the
+        # hooks fire. Without it every `wf transition` here would (correctly) be
+        # refused by the mid-run liveness check. The liveness tests that care
+        # remove or expire this seed themselves.
+        heartbeat.touch(self.tmp, "test-fixture")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -163,10 +169,16 @@ class Base(unittest.TestCase):
                          {"tool_name": tool, "tool_input": tool_input,
                           "tool_response": tool_response, "is_error": is_error})
 
-    def wf(self, *args):
+    def wf(self, *args, env=None):
+        e = {**os.environ, **(env or {})} if env else None
         return subprocess.run([sys.executable,
                                str(self.tmp / ".workflow" / "bin" / "wf"), *args],
-                              capture_output=True, text=True, cwd=str(self.tmp))
+                              capture_output=True, text=True, cwd=str(self.tmp),
+                              env=e)
+
+    def events(self):
+        """Every decision-log event name, oldest first."""
+        return [e.get("event") for e in ledger.read_events(self.tmp, self.wid)]
 
     def invocation_prompt(self, exp):
         return (f"GMDW-INVOCATION\n"
@@ -723,6 +735,282 @@ class TestGovernanceLiveness(unittest.TestCase):
         self.write_heartbeat(age_sec=-5)  # 5s ahead, inside the 60s skew window
         live, why = heartbeat.status(self.tmp)
         self.assertTrue(live, f"small forward skew should stay live: {why}")
+
+
+# =========================================================================== #
+# Recovery + mid-run liveness (ADR-001 Phase 2)
+# =========================================================================== #
+
+class TestPhase2Recovery(Base):
+    """The hooks-dark failure modes and their human-gated recovery.
+
+    Phase 1 proved the hooks were live when a workflow STARTED. These cover what
+    happens when a session loses them mid-run: the workflow refuses to advance
+    (R11/R12), and the two states a dark session can strand — an unaccepted
+    artifact (R1-R6) and an orphaned invocation lock (R7-R9) — are recoverable by
+    a named human, but only from a session where the hooks really are dark (R10).
+
+    Note: these tests invoke the wf entry point directly, as an operator's
+    terminal would. That is exactly the path the R10 gate deny leaves open, so
+    the deny does not (and must not) affect them.
+    """
+
+    def repo_analysis_body(self):
+        return {"stack": {"languages": ["python"]},
+                "relevant_modules": [{"finding": "app", "evidence": "src/app.py"}],
+                "conventions": [], "test_infrastructure": {"test_command": "pytest"},
+                "security_surfaces": [], "unverified": []}
+
+    def strand_repo_analysis(self, version=1):
+        """A schema-valid repo_analysis on disk that nothing ever accepted —
+        what a hooks-dark session leaves behind (reproduces wf_20260713_003)."""
+        rel = S.artifact_relpath("repo_analysis", version)
+        full = S.workflow_dir(self.tmp, self.wid) / rel
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(json.dumps(
+            {**self.envelope("repo_analysis", version, "repo-analyst"),
+             **self.repo_analysis_body()}, indent=2))
+        return rel, full
+
+    def go_dark(self):
+        """Drop the heartbeat seeded by setUp: the hooks stop firing mid-run."""
+        (self.tmp / heartbeat.HEARTBEAT_REL).unlink()
+
+    def accepted_events(self):
+        return [e for e in ledger.read_events(self.tmp, self.wid)
+                if e.get("event") == "artifact_accepted"]
+
+    # -- wf accept: stranded-artifact recovery --------------------------------
+
+    def test_R1_accept_unstrands_valid_repo_analysis(self):
+        self.write_artifact("classification", 1, self.classification())
+        rel, _ = self.strand_repo_analysis()
+        self.seed(state="REPOSITORY_ANALYSIS", current={"repo_analysis": 0},
+                  open_invocation={"agent": "repo-analyst",
+                                   "expected_type": "repo_analysis", "version": 1,
+                                   "expected_artifact": rel})
+        # Stuck: the artifact is valid and on disk, but only acceptance sets the
+        # pointer the guard requires, and only a hook accepts.
+        r = self.wf("transition", "PLANNING", "--trigger", rel)
+        self.assertEqual(r.returncode, 1, "a stranded artifact must block")
+
+        r = self.wf("accept", "--by", "arun")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        _, st = self.load()
+        self.assertEqual(st["current"]["repo_analysis"], 1)
+        self.assertTrue(ledger.is_frozen(self.tmp, self.wid, rel),
+                        "a recovered artifact is accepted, so it is immutable")
+        self.assertIsNone(st["open_invocation"],
+                          "recovery must release the dangling invocation too")
+        ev = self.accepted_events()[-1]
+        self.assertEqual(ev["actor"], "human_recovery",
+                         "audits must separate hook-accepted from human-recovered")
+        self.assertEqual(ev["by"], "arun")
+        # ...and the workflow moves again
+        r = self.wf("transition", "PLANNING", "--trigger", rel)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.load()[1]["state"], "PLANNING")
+
+    def test_R2_accept_rejects_schema_invalid_artifact(self):
+        rel, full = self.strand_repo_analysis()
+        full.write_text(json.dumps({"artifact_type": "repo_analysis",
+                                    "workflow_id": self.wid, "version": 1,
+                                    "produced_by": "repo-analyst",
+                                    "input_artifact_refs": [],
+                                    "created_at": S.utcnow(), "status": "complete",
+                                    "stack": {}}))  # missing required keys
+        self.seed(state="REPOSITORY_ANALYSIS", current={"repo_analysis": 0})
+        r = self.wf("accept", "--by", "arun")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("schema validation failed", r.stderr)
+        _, st = self.load()
+        self.assertEqual(st["current"]["repo_analysis"], 0)
+        self.assertFalse(ledger.is_frozen(self.tmp, self.wid, rel))
+        self.assertEqual(self.accepted_events(), [])
+
+    def test_R3_accept_rejects_wrong_version(self):
+        # v2 on disk while the state waits for v1: accepting "whatever is there"
+        # would let an out-of-band version skip a version of review.
+        rel2, _ = self.strand_repo_analysis(version=2)
+        self.seed(state="REPOSITORY_ANALYSIS", current={"repo_analysis": 0})
+        r = self.wf("accept", "--by", "arun")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("only that exact version", r.stderr)
+        _, st = self.load()
+        self.assertEqual(st["current"]["repo_analysis"], 0)
+        self.assertFalse(ledger.is_frozen(self.tmp, self.wid, rel2))
+
+    def test_R4_accept_rejects_already_frozen(self):
+        rel, _ = self.write_artifact("repo_analysis", 1, self.repo_analysis_body(),
+                                     produced_by="repo-analyst", freeze=True,
+                                     set_pointer=False)
+        self.seed(state="REPOSITORY_ANALYSIS", current={"repo_analysis": 0})
+        r = self.wf("accept", "--by", "arun")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("immutable", r.stderr)
+        self.assertEqual(self.load()[1]["current"]["repo_analysis"], 0)
+
+    def test_R5_accept_requires_by(self):
+        rel, _ = self.strand_repo_analysis()
+        self.seed(state="REPOSITORY_ANALYSIS", current={"repo_analysis": 0})
+        r = self.wf("accept")
+        self.assertNotEqual(r.returncode, 0, "recovery must name a human")
+        _, st = self.load()
+        self.assertEqual(st["current"]["repo_analysis"], 0)
+        self.assertFalse(ledger.is_frozen(self.tmp, self.wid, rel))
+
+    def test_R6_accept_refuses_when_expected_is_none(self):
+        self.seed(state="PLAN_APPROVAL")  # a human gate: no artifact is produced
+        r = self.wf("accept", "--by", "arun")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("produces no artifact", r.stderr)
+        self.assertEqual(self.load()[1]["state"], "PLAN_APPROVAL")
+
+    # -- wf clear-invocation: orphaned-lock recovery ---------------------------
+
+    def test_R7_clear_invocation_unblocks_escalate(self):
+        self.write_artifact("classification", 1, self.classification())
+        self.seed(state="REPOSITORY_ANALYSIS", counters={"consecutive_failures": 1},
+                  open_invocation={"agent": "repo-analyst",
+                                   "expected_type": "repo_analysis", "version": 1,
+                                   "expected_artifact":
+                                       S.artifact_relpath("repo_analysis", 1)})
+        # The documented escape (KNOWN_LIMITATIONS C1) is itself blocked: guard()
+        # checks open_invocation before it allows ESCALATED. Total deadlock.
+        r = self.wf("transition", "ESCALATED", "--trigger", "orphan",
+                    "--reason", "other")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("invocation is still open", r.stderr)
+
+        r = self.wf("clear-invocation", "--by", "arun")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        _, st = self.load()
+        self.assertIsNone(st["open_invocation"])
+        self.assertEqual(st["counters"]["consecutive_failures"], 1,
+                         "releasing the lock must not reset the failure counter "
+                         "(or it becomes a way to dodge the escalation limit)")
+        self.assertEqual(st["current"]["repo_analysis"], 0,
+                         "clearing a lock must not accept anything")
+        ev = [e for e in ledger.read_events(self.tmp, self.wid)
+              if e.get("event") == "invocation_cleared"]
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["actor"], "human_recovery")
+        self.assertEqual(ev[0]["by"], "arun")
+        self.assertEqual(ev[0]["agent"], "repo-analyst")
+
+        r = self.wf("transition", "ESCALATED", "--trigger", "orphan",
+                    "--reason", "other")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.load()[1]["state"], "ESCALATED")
+
+    def test_R8_clear_invocation_refuses_when_none(self):
+        self.seed(state="REPOSITORY_ANALYSIS", open_invocation=None)
+        before = json.dumps(self.load()[1], sort_keys=True)
+        n_events = len(self.events())
+        r = self.wf("clear-invocation", "--by", "arun")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no open invocation", r.stderr)
+        self.assertEqual(json.dumps(self.load()[1], sort_keys=True), before)
+        self.assertEqual(len(self.events()), n_events,
+                         "a refusal must not write a ledger event")
+
+    def test_R9_clear_invocation_requires_by(self):
+        inv = {"agent": "repo-analyst", "expected_type": "repo_analysis",
+               "version": 1}
+        self.seed(state="REPOSITORY_ANALYSIS", open_invocation=inv)
+        r = self.wf("clear-invocation")
+        self.assertNotEqual(r.returncode, 0, "recovery must name a human")
+        self.assertEqual(self.load()[1]["open_invocation"], inv)
+
+    # -- SF1: the recovery commands are unreachable while hooks are live -------
+
+    def test_R10_gate_denies_recovery_commands_while_active(self):
+        self.seed(state="REPOSITORY_ANALYSIS")
+        for cmd in ("wf accept --by ci",
+                    ".workflow/bin/wf accept --by ci",
+                    "wf clear-invocation --by ci",
+                    "python3 .workflow/bin/wf clear-invocation --by ci"):
+            self.assertDenied(self.pretool("Bash", {"command": cmd}),
+                              "recovery commands")
+        # ...without swallowing the rest of the CLI
+        self.assertAllowed(self.pretool("Bash", {"command": "wf status"}))
+        self.assertAllowed(self.pretool("Bash", {"command": "wf expected"}))
+
+    # -- mid-run transition liveness ------------------------------------------
+
+    def test_R11_transition_refuses_when_hooks_dark(self):
+        self.write_artifact("classification", 1, self.classification())
+        self.write_artifact("repo_analysis", 1, self.repo_analysis_body(),
+                            produced_by="repo-analyst")
+        self.seed(state="REPOSITORY_ANALYSIS")
+        self.go_dark()
+        r = self.wf("transition", "PLANNING", "--trigger",
+                    "artifacts/repo_analysis_v1.json")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("governance hooks are not firing", r.stderr)
+        self.assertEqual(self.load()[1]["state"], "REPOSITORY_ANALYSIS")
+        self.assertIn("transition_denied", self.events(),
+                      "a mid-run refusal must leave an audit trail")
+
+    def test_R12_transition_bypass_proceeds_and_logs(self):
+        self.write_artifact("classification", 1, self.classification())
+        self.write_artifact("repo_analysis", 1, self.repo_analysis_body(),
+                            produced_by="repo-analyst")
+        self.seed(state="REPOSITORY_ANALYSIS")
+        self.go_dark()
+        trig = "artifacts/repo_analysis_v1.json"
+
+        # =0 must NOT bypass: the affirmative-only read fails closed, so a stray
+        # assignment cannot silently switch governance off.
+        r = self.wf("transition", "PLANNING", "--trigger", trig,
+                    env={"GMDW_ALLOW_UNGOVERNED": "0"})
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("governance hooks are not firing", r.stderr)
+        self.assertEqual(self.load()[1]["state"], "REPOSITORY_ANALYSIS")
+        self.assertNotIn("governance_liveness_bypassed", self.events())
+
+        # ESCALATED is exempt: a dark session must still be able to bail out.
+        r = self.wf("transition", "ESCALATED", "--trigger", trig, "--reason", "other")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.load()[1]["state"], "ESCALATED")
+        self.assertNotIn("governance_liveness_bypassed", self.events())
+
+        # An explicit affirmative proceeds, and says so in the ledger.
+        self.seed(state="REPOSITORY_ANALYSIS")
+        r = self.wf("transition", "PLANNING", "--trigger", trig,
+                    env={"GMDW_ALLOW_UNGOVERNED": "TRUE"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.load()[1]["state"], "PLANNING")
+        self.assertIn("governance_liveness_bypassed", self.events())
+
+        # ...as does the flag.
+        self.seed(state="REPOSITORY_ANALYSIS")
+        r = self.wf("transition", "PLANNING", "--trigger", trig,
+                    "--allow-ungoverned")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(
+            len([e for e in self.events() if e == "governance_liveness_bypassed"]), 2)
+
+    # -- the validator still fails closed after the extraction ----------------
+
+    def test_R13_validator_error_sets_integrity_hold(self):
+        self.write_artifact("classification", 1, self.classification(), freeze=True)
+        rel, _ = self.strand_repo_analysis()
+        self.seed(state="REPOSITORY_ANALYSIS",
+                  open_invocation={"agent": "repo-analyst",
+                                   "expected_type": "repo_analysis", "version": 1,
+                                   "expected_artifact": rel})
+        # A deterministic fault PAST the schema/semantic stage and inside main():
+        # the freeze step loads the registry, which is no longer JSON.
+        (S.workflow_dir(self.tmp, self.wid) / "artifacts_index.json") \
+            .write_text("{ not json")
+        d = self.subagentstop()
+        self.assertBlocked(d, "validator internal error")
+        _, st = self.load()
+        self.assertTrue(st["flags"]["integrity_hold"])
+        self.assertIn("validator_error", self.events())
+        self.assertEqual(st["current"]["repo_analysis"], 0,
+                         "a fault mid-accept must not leave the artifact accepted")
 
 
 if __name__ == "__main__":

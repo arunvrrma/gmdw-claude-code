@@ -13,7 +13,7 @@ exists to resolve the open items.
 | R1 | Hook firing order (PostToolUse vs SubagentStop) differs from expectation | Counters/validation could act on a stale `open_invocation` | `open_invocation → last_invocation` handoff makes validation order-independent | LIVE V1 |
 | R2 | `tool_response` token fields differ from the parsed keys (`usage.input_tokens`, …) | Budget tracked by `len/4` estimate, not exact tokens | Estimate fallback flagged `estimated:true`; budget still enforced, just coarser | LIVE V2 |
 | R3 | Runtime does not pass `model` (or `subagent_type`) to the PreToolUse hook | Model-policy check silently no-ops; agent/state binding weakens | Gate treats missing `model` as "unspecified" (skips that one check); state/agent/header checks still fire | LIVE V3 |
-| R4 | `$CLAUDE_PROJECT_DIR` unset/incorrect for hook commands (or session project ≠ GMDW repo) | Hooks don't run → **no governance** | **Closed at entry (ADR-001 Phase 1):** the hooks write a liveness heartbeat on every firing and `wf init` refuses to start a workflow unless a fresh heartbeat proves the enforcement plane is live in this session (override: `GMDW_ALLOW_UNGOVERNED_INIT`, ledger-recorded). Mid-run hook loss is not yet caught — see Phase 2. | LIVE V1 (pre-flight); **confirmed live in `wf_20260713_001`**, now guarded — see §F (F1) |
+| R4 | `$CLAUDE_PROJECT_DIR` unset/incorrect for hook commands (or session project ≠ GMDW repo) | Hooks don't run → **no governance** | **Closed at entry and mid-run (ADR-001 Phases 1–2)** via four mechanisms: (1) **init refusal** — the hooks write a liveness heartbeat on every firing and `wf init` refuses to start a workflow without a fresh one (Phase 1); (2) **mid-run transition re-check** — every `wf transition` (except `ESCALATED`/`FAILED`/`REJECTED`) re-verifies liveness, via a hook-sourced ledger event since the last transition or a fresh heartbeat, and refuses otherwise (override: `GMDW_ALLOW_UNGOVERNED=1` / `--allow-ungoverned`, affirmative values only, ledger-recorded); (3) **stranded-artifact recovery** — `wf accept --by <human>`; (4) **orphaned-invocation recovery** — `wf clear-invocation --by <human>`. Both recovery commands are code-confined to hooks-dark sessions by a PreToolUse gate deny (the gate only runs when hooks are live, so it can prove the recovery case does not apply), so a misbehaving in-session Orchestrator cannot use them. **Residual:** see §F (F1). | LIVE V1 (pre-flight); **confirmed live in `wf_20260713_001`**, now guarded — see §F (F1) |
 | R5 | Orchestrator cannot inject the `GMDW-INVOCATION` header into the subagent prompt | Every invocation denied (header missing) | Deny is safe (blocks work, never allows illegally) | LIVE V3 |
 
 ## B. Enforcement scope the design deliberately accepts
@@ -44,10 +44,15 @@ exists to resolve the open items.
 
 1. **Crash recovery is state-file based.** If the session dies, `state.json` +
    artifacts fully describe position; re-running `/gmdw` (resume) reads them. But an
-   invocation that was **in flight** at crash leaves `open_invocation` set — the next
-   action is gated (single-flight) until the operator clears it via a `wf` transition
-   to `ESCALATED` or confirms the artifact landed. There is no automatic
-   orphan-invocation reaper in the MVP; this is a manual step (see LIVE V8).
+   invocation that was **in flight** at crash leaves `open_invocation` set, and
+   single-flight then gates every next action. Recovery is `wf clear-invocation
+   --by <human>` (ADR-001 Phase 2), which releases the lock and nothing else.
+   There is no automatic orphan-invocation reaper; this is a manual step (LIVE V8).
+   **Correction:** this entry previously said to clear it by transitioning to
+   `ESCALATED`. That never worked — `guard()` refuses every transition while an
+   invocation is open, *including* `ESCALATED`, so an orphaned lock deadlocked the
+   workflow completely. Observed live in `wf_20260714_001`; it required a raw
+   `state.json` edit before `wf clear-invocation` existed.
 2. **Integrity hold is terminal-ish.** Once `integrity_hold` is set (tamper or false
    test pass), only `ESCALATED`/`FAILED` are reachable. Resolution is a human decision;
    there is no automated un-hold.
@@ -85,5 +90,39 @@ The review controls exercised in the same run are recorded in
 
 | ID | Limitation | Impact | Detection / recovery |
 |---|---|---|---|
-| F1 | **Cross-repo runs are governed by operator discipline, not runtime interception** (confirms R4). Because `$CLAUDE_PROJECT_DIR` did not resolve to the GMDW repo, `PreToolUse`/`SubagentStop` did not auto-fire; governance held only because the operator manually drove the same validators (`.workflow/bin/wf` + the `gmdw` hook modules) at each gate. | Enforcement degrades from runtime-enforced to operator-advisory; failure mode is **fail-open** (an omitted manual step passes ungoverned work silently). Outcome parity was achieved in `wf_20260713_001`, but by discipline, not enforcement. | **Now code-enforced at init (ADR-001 Phase 1):** `wf init` fails fast when the governance-hook heartbeat is absent/stale, converting the silent fail-open start into an explicit refusal. (The prior pre-flight `$CLAUDE_PROJECT_DIR` checklist control is now redundant at init.) Tracked: [#2](https://github.com/arunvrrma/gmdw-claude-code/issues/2) ([`issues/cross-repo-governance-hook-limitation.md`](issues/cross-repo-governance-hook-limitation.md)). |
+| F1 | **Cross-repo runs are governed by operator discipline, not runtime interception** (confirms R4). Because `$CLAUDE_PROJECT_DIR` did not resolve to the GMDW repo, `PreToolUse`/`SubagentStop` did not auto-fire; governance held only because the operator manually drove the same validators (`.workflow/bin/wf` + the `gmdw` hook modules) at each gate. | Enforcement degrades from runtime-enforced to operator-advisory; failure mode is **fail-open** (an omitted manual step passes ungoverned work silently). Outcome parity was achieved in `wf_20260713_001`, but by discipline, not enforcement. | **Now code-enforced at init and mid-run (ADR-001 Phases 1–2):** `wf init` fails fast when the heartbeat is absent/stale, and every non-exit `wf transition` re-checks liveness, converting both the silent fail-open start *and* silent mid-run hook loss into explicit refusals. The two states a dark session strands are recoverable in-governance: `wf accept --by <human>` (a validly-produced but unaccepted artifact, through the *same* core the hook uses — no privileged shortcut, and only `wf expected`'s exact next version) and `wf clear-invocation --by <human>` (an orphaned `open_invocation`, which otherwise deadlocks **every** transition including the `ESCALATED` escape this doc previously recommended — see the residual below). (The prior pre-flight `$CLAUDE_PROJECT_DIR` checklist control is now redundant at init.) Tracked: [#2](https://github.com/arunvrrma/gmdw-claude-code/issues/2) ([`issues/cross-repo-governance-hook-limitation.md`](issues/cross-repo-governance-hook-limitation.md)). |
 | F3 | **The plan-approval artifact records a single, immutable decision.** `artifacts/approvals/plan_approval.json` exposes exactly one slot, frozen on write. A `changes_requested → revise → approve` cycle cannot be represented: the first decision (defer M3) froze the slot, so the follow-up `approved` on the re-planned `plan_v2` could not be written and `PLAN_APPROVAL → IMPLEMENTING` was guard-blocked ("plan approval record required"). | A routine plan-iteration pattern is forced onto the **escalation** path (its sanctioned recovery), so legitimate re-approvals surface in `escalations[]`, diluting the audit signal of genuine escalations. All three reviewers and the human had approved `plan_v2` — a tooling limitation, not a governance disagreement. | Escalation override (as used in `wf_20260713_001`). Tracked: [#3](https://github.com/arunvrrma/gmdw-claude-code/issues/3) ([`issues/plan-approval-artifact-lifecycle-limitation.md`](issues/plan-approval-artifact-lifecycle-limitation.md)). |
+
+### F1/R4 residual after ADR-001 Phase 2
+
+What the four mechanisms above do **not** close. None of these is claimed closed:
+
+1. **`--by` is trusted, not verified.** Both recovery commands take the human's
+   name as a string and record it; nothing authenticates it. This only matters in
+   a genuinely hooks-dark session, because the PreToolUse deny makes both commands
+   unreachable while hooks are live. In a dark session the control is a real human
+   at a terminal (or the session `!` escape) — neither of which the model drives.
+2. **The gate deny is a syntactic rule.** Like every other `gate_bash` rule
+   (git-push, git-commit, package installs), it matches command text, so dynamic
+   construction could evade it. It raises the bar and denies the concrete
+   self-accept path; it is defense-in-depth over the core's identical validation
+   and next-version-only rule, not the sole barrier. Anyone able to obfuscate
+   already holds `Bash` and gains no privilege they lacked (see 4).
+3. **`guard()`'s single-flight ordering is unchanged by choice.** It still checks
+   `open_invocation` before allowing `ESCALATED`. Orphaned locks are cleared by
+   human recovery rather than auto-bypassed, so a live in-flight invocation can
+   never be shrugged off by a transition.
+4. **The `_semantic` test-rerun runs the artifact-declared command under a shell.**
+   `wf accept` makes that reachable from the CLI, but it is the *same*
+   already-accepted trust boundary the SubagentStop hook has always crossed — an
+   inherited surface, not a new capability (the Orchestrator already holds `Bash`).
+   The gate deny additionally stops it being used to launder shell execution as a
+   governed test-rerun in a live session.
+5. **Legacy `GMDW_ALLOW_UNGOVERNED_INIT` keeps its loose truthiness.** Only the
+   new canonical `GMDW_ALLOW_UNGOVERNED` is affirmative-only (`1/true/yes/on`), at
+   both init and transition. `GMDW_ALLOW_UNGOVERNED_INIT=0` still enables the init
+   bypass; hardening it would change shipped Phase-1 behavior, so it is deferred.
+6. **No in-governance `wf extend-deadline`.** A run that outlives its wall-clock
+   deadline (or its `max_agent_invocations` / `max_review_cycles`) still needs a
+   raw `state.json` edit; `wf_20260714_001` needed four such interventions. A
+   human-attributed, audited recovery-command family for budgets is a known gap.

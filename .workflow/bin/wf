@@ -7,8 +7,15 @@ Commands:
   expected    show what artifact/agent the current state is waiting for
   transition  request a state transition (table + guard validated)
   approve     record a human gate decision as an approval artifact
+  accept      human recovery: accept a stranded, validly-produced artifact
+  clear-invocation  human recovery: release an orphaned open_invocation
   validate    validate an artifact file against its schema
   close       finalize a terminal workflow (tamper check, index, clear ACTIVE)
+
+The two recovery commands exist ONLY for a session whose governance hooks are
+not firing (nothing else can accept an artifact or release the single-flight
+lock there). While the hooks ARE live the PreToolUse gate denies them, so they
+cannot be used to bypass invocation gating from inside a governed session.
 
 Exit codes: 0 ok, 1 governance rejection / validation failure, 2 usage error.
 """
@@ -24,9 +31,22 @@ _HERE = Path(__file__).resolve().parent
 _FALLBACK_ROOT = _HERE.parent.parent  # repo root when invoked in place
 sys.path.insert(0, str(_FALLBACK_ROOT / ".claude" / "hooks"))
 
-from gmdw import heartbeat, ledger, policy, schemas  # noqa: E402
+from gmdw import accept, heartbeat, ledger, policy, schemas  # noqa: E402
 from gmdw import state as S               # noqa: E402
 from gmdw.state import GmdwError          # noqa: E402
+
+# Transitions that must stay reachable when the enforcement plane is dark:
+# they are how a stuck or ungoverned workflow is abandoned or handed to a human.
+LIVENESS_EXEMPT_STATES = ("ESCALATED", "FAILED", "REJECTED")
+
+# The canonical bypass env var (ADR-001). Read with an AFFIRMATIVE-ONLY check:
+# a bypass that treats GMDW_ALLOW_UNGOVERNED=0 as "on" would silently disable
+# governance on a stray assignment, which is the wrong way for this to fail.
+_AFFIRMATIVE = {"1", "true", "yes", "on"}
+
+
+def _affirmative(value: str | None) -> bool:
+    return (value or "").strip().lower() in _AFFIRMATIVE
 
 
 def _root():
@@ -63,7 +83,12 @@ def cmd_init(a):
     # the trivial route, or a deadlock at the first hook-owned acceptance).
     # Refuse fast with an actionable message rather than fail later.
     live, why = heartbeat.status(root)
-    bypass = os.environ.get("GMDW_ALLOW_UNGOVERNED_INIT")
+    # GMDW_ALLOW_UNGOVERNED is the canonical name (honored at init and at
+    # transition) and is affirmative-only. GMDW_ALLOW_UNGOVERNED_INIT is the
+    # Phase-1 name, kept working here for backward compatibility with its
+    # original loose truthiness.
+    bypass = (os.environ.get("GMDW_ALLOW_UNGOVERNED_INIT") or
+              _affirmative(os.environ.get("GMDW_ALLOW_UNGOVERNED")))
     if not live and not bypass:
         _die("governance hooks are not active in this session — refusing to "
              "start a workflow.\n"
@@ -73,7 +98,7 @@ def cmd_init(a):
              "  .claude/settings.json. Launch Claude Code with gmdw-claude-code as\n"
              "  the project root and retry.\n"
              "  For legitimate non-Claude use (CI, manual ops) set\n"
-             "  GMDW_ALLOW_UNGOVERNED_INIT=1 to override (recorded in the ledger).")
+             "  GMDW_ALLOW_UNGOVERNED=1 to override (recorded in the ledger).")
 
     try:
         wf_id = S.create_workflow(root, text, title, a.by, a.profile)
@@ -129,8 +154,62 @@ def cmd_expected(a):
         print(json.dumps(exp))
 
 
+def _liveness_preflight(root, a):
+    """Refuse a mid-run transition when the enforcement plane is dark
+    (ADR-001 Phase 2).
+
+    `wf init` proves the hooks were live at the START of a workflow, but the
+    session can lose them afterwards (a resumed run, a session rooted elsewhere,
+    a settings change) — and from then on nothing gates invocations, scopes
+    writes, or accepts artifacts, while `wf` happily keeps advancing the state
+    machine. Re-check at each transition, the one point where the workflow
+    actually moves.
+
+    Two independent signals, either sufficient: a hook-sourced ledger event since
+    the last transition (proof the hooks fired during THIS leg), or a fresh
+    heartbeat (proof they fired recently at all; carries the future-skew bound).
+    """
+    wf_id = S.active_id(root)
+    if not wf_id or a.to in LIVENESS_EXEMPT_STATES:
+        return  # recovery/abandon exits must never be gated on liveness
+    if ledger.hook_event_since_last_transition(root, wf_id):
+        return
+    live, why = heartbeat.status(root)
+    if live:
+        return
+
+    try:
+        _, st = S.load_state(root, wf_id)
+        frm = st["state"]
+    except GmdwError:
+        frm = None
+
+    if _affirmative(os.environ.get("GMDW_ALLOW_UNGOVERNED")) or a.allow_ungoverned:
+        ledger.log(root, wf_id, "governance_liveness_bypassed", reason=why,
+                   actor=a.actor, from_state=frm, to_state=a.to)
+        print(f"wf: warning: {why}; advancing under the ungoverned override "
+              f"(recorded in the ledger)", file=sys.stderr)
+        return
+
+    ledger.log(root, wf_id, "transition_denied", to_state=a.to, from_state=frm,
+               reason=f"governance hooks are not firing in this session: {why}")
+    _die("governance hooks are not firing in this session — refusing to advance "
+         "the workflow.\n"
+         f"  reason: {why}\n"
+         "  This workflow started under enforcement, but this session is not\n"
+         "  providing it: invocation gating, write-scoping, budgets and artifact\n"
+         "  acceptance are all absent, so advancing would record governed\n"
+         "  progress that nothing governed. Relaunch Claude Code with\n"
+         "  gmdw-claude-code as the project root and retry.\n"
+         "  ESCALATED / FAILED / REJECTED remain reachable without hooks.\n"
+         "  For legitimate non-Claude use (CI, manual ops) set\n"
+         "  GMDW_ALLOW_UNGOVERNED=1 or pass --allow-ungoverned (recorded in\n"
+         "  the ledger).")
+
+
 def cmd_transition(a):
     root = _root()
+    _liveness_preflight(root, a)
     try:
         st = S.transition(root, a.to, a.trigger, actor=a.actor,
                           reason=a.reason, detail=a.detail)
@@ -212,6 +291,89 @@ def cmd_approve(a):
     ledger.log(root, wf_id, "human_approval", gate=gate, decision=decision,
                by=a.by, resolution=resolution, artifact=rel)
     print(json.dumps({"gate": gate, "decision": decision, "artifact": rel}))
+
+
+def cmd_accept(a):
+    """Human recovery for a STRANDED artifact (ADR-001 Phase 2).
+
+    An artifact that a subagent produced validly, but that no SubagentStop hook
+    ever accepted (because the hooks were not firing), leaves the workflow unable
+    to advance: the guard wants a pointer only acceptance sets, and the artifact
+    is already on disk so re-running the agent would collide with it.
+
+    This accepts ONLY the exact artifact the current state is waiting for, via
+    the same core the hook uses — identical validation, no privileged shortcut.
+    It is denied by the PreToolUse gate while hooks are live (nothing legitimate
+    needs it there), so it is reachable only from a genuinely hooks-dark session.
+    """
+    root = _root()
+    try:
+        wf_id, st = S.load_state(root, a.workflow)
+    except GmdwError as e:
+        _die(str(e))
+
+    exp = S.expected(root, st)
+    if exp is None:
+        _die(f"state {st['state']} produces no artifact; there is nothing to "
+             f"accept (recovery here is 'wf approve' or a transition)")
+    atype, version = exp["artifact_type"], exp["version"]
+    run_rel = S.artifact_relpath(atype, version)
+    full = S.workflow_dir(root, wf_id) / run_rel
+
+    if not full.exists():
+        _die(f"nothing to accept: {run_rel} does not exist. State {st['state']} "
+             f"is waiting for {atype} v{version}; only that exact version is "
+             f"acceptable.")
+    if ledger.is_frozen(root, wf_id, run_rel):
+        _die(f"{run_rel} is already accepted and frozen; accepted artifacts are "
+             f"immutable (produce the next version instead)")
+
+    res = accept.accept_artifact(root, st, atype, version,
+                                 actor="human_recovery", by=a.by)
+    if not res.accepted:
+        _die(f"refusing to accept {run_rel}: {res.reason}")
+
+    # The core advanced the pointer, froze the artifact and logged acceptance.
+    # Close out the invocation plane exactly as the hook would.
+    st["counters"]["consecutive_failures"] = 0
+    st["open_invocation"] = None
+    S.save_state(root, wf_id, st)
+    print(json.dumps({"accepted": atype, "version": version, "path": run_rel,
+                      "by": a.by, "state": st["state"]}))
+
+
+def cmd_clear_invocation(a):
+    """Human recovery for an ORPHANED invocation (ADR-001 Phase 2).
+
+    If an invocation is interrupted between the gate opening it and a subagent
+    actually running, open_invocation dangles with no process behind it. That
+    deadlocks the workflow completely: guard() refuses EVERY transition while an
+    invocation is open — including ESCALATED, the documented escape — and
+    single-flight refuses every new invocation. The lock outlives the thing it
+    was protecting.
+
+    This releases that lock and nothing else: no counters, no pointers, no
+    acceptance. consecutive_failures deliberately survives, so clearing cannot be
+    used to dodge the two-failure escalation limit. Like 'wf accept' it is denied
+    by the gate while hooks are live (a live session's in-flight lock is real).
+    """
+    root = _root()
+    try:
+        wf_id, st = S.load_state(root, a.workflow)
+    except GmdwError as e:
+        _die(str(e))
+
+    inv = st.get("open_invocation")
+    if not inv:
+        _die("no open invocation to clear; nothing to do")
+
+    summary = {"agent": inv.get("agent"), "expected_type": inv.get("expected_type"),
+               "version": inv.get("version")}
+    st["open_invocation"] = None
+    S.save_state(root, wf_id, st)
+    ledger.log(root, wf_id, "invocation_cleared", actor="human_recovery",
+               by=a.by, **summary)
+    print(json.dumps({"cleared": summary, "by": a.by, "state": st["state"]}))
 
 
 def cmd_validate(a):
@@ -297,6 +459,10 @@ def main():
                    choices=[None, "revision_limit", "reject_verdict", "agent_blocked",
                             "budget", "integrity_violation", "stale_workspace", "other"])
     p.add_argument("--detail", default=None)
+    p.add_argument("--allow-ungoverned", action="store_true",
+                   dest="allow_ungoverned",
+                   help="advance even though the governance hooks are not firing "
+                        "in this session (audited; for CI / manual ops)")
     p.set_defaults(fn=cmd_transition)
 
     p = sub.add_parser("approve", help="record a human gate decision")
@@ -314,6 +480,20 @@ def main():
                    dest="overridden_findings")
     p.add_argument("--workflow", default=None)
     p.set_defaults(fn=cmd_approve)
+
+    p = sub.add_parser("accept", help="human recovery: accept a stranded, "
+                                      "validly-produced artifact (hooks-dark "
+                                      "sessions only)")
+    p.add_argument("--by", required=True, help="human accountable for the recovery")
+    p.add_argument("--workflow", default=None)
+    p.set_defaults(fn=cmd_accept)
+
+    p = sub.add_parser("clear-invocation",
+                       help="human recovery: release an orphaned open_invocation "
+                            "(hooks-dark sessions only)")
+    p.add_argument("--by", required=True, help="human accountable for the recovery")
+    p.add_argument("--workflow", default=None)
+    p.set_defaults(fn=cmd_clear_invocation)
 
     p = sub.add_parser("validate", help="validate an artifact against its schema")
     p.add_argument("path")

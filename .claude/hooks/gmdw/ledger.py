@@ -35,6 +35,52 @@ def log(root, wf_id: str, event: str, **fields) -> None:
         f.write(json.dumps(entry, sort_keys=True) + "\n")
 
 
+# Events only a governance HOOK can write. `artifact_accepted` is deliberately
+# absent: the wf CLI writes it too (orchestrator-written artifacts, and human
+# recovery), so its presence proves nothing about the enforcement plane.
+HOOK_SOURCED_EVENTS = ("invocation_requested", "invocation_completed",
+                       "invocation_failed")
+
+
+def read_events(root, wf_id: str) -> list:
+    """Every event in the decision log, oldest first. Unparseable lines are
+    skipped: the log is an audit trail, and one bad line must not blind a reader
+    to the rest of it."""
+    p = _run_dir(root, wf_id) / "decision_log.jsonl"
+    if not p.exists():
+        return []
+    events = []
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events
+
+
+def hook_event_since_last_transition(root, wf_id: str) -> bool:
+    """Did a governance hook fire during the CURRENT leg of the workflow?
+
+    Scans back from the newest event to the last `transition` (the start of this
+    leg) looking for a hook-sourced event. This is the strong liveness signal:
+    unlike the heartbeat, which only says hooks fired *recently somewhere*, this
+    says they fired for THIS workflow since it last moved.
+    """
+    for e in reversed(read_events(root, wf_id)):
+        if e.get("event") == "transition":
+            return False
+        if e.get("event") in HOOK_SOURCED_EVENTS:
+            return True
+    return False
+
+
 def sha256_file(path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:

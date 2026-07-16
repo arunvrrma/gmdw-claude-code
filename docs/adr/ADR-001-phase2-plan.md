@@ -1,6 +1,15 @@
-# ADR-001 Phase 2 — Implementation Plan (proposed)
+# ADR-001 Phase 2 — Implementation Plan
 
-- **Status:** Proposed (Phase 1 implemented; this is the follow-on)
+- **Status:** Accepted / Implemented (2026-07-16). Implemented from the governed
+  run `wf_20260714_001`'s security-hardened `plan_v3.json`, which supersedes this
+  document's milestone shape; see that artifact for the authoritative spec and
+  `ADR-001-phase2-work-so-far-handoff.md` for how the run reached it. What landed:
+  the accept pipeline extracted to `.claude/hooks/gmdw/accept.py` (shared by the
+  SubagentStop hook and the CLI), mid-run transition liveness with an
+  affirmative-only `GMDW_ALLOW_UNGOVERNED` override, `wf accept --by` and
+  `wf clear-invocation --by` human recovery, a PreToolUse deny confining both to
+  hooks-dark sessions, and 13 regression tests (47 total). Residual is recorded in
+  `KNOWN_LIMITATIONS.md` §F1/R4.
 - **Depends on:** ADR-001 (authoritative) and its Phase 1 (heartbeat + `wf init`
   liveness refusal), now landed.
 - **Goal:** finish moving artifact-acceptance authority into the workflow core,

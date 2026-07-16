@@ -1,6 +1,6 @@
 # ADR-001: Artifact acceptance authority and governance-hook liveness
 
-- **Status:** Proposed
+- **Status:** Accepted / Implemented (Phase 1 2026-07-14; Phase 2 2026-07-16)
 - **Date:** 2026-07-13
 - **Deciders:** (pending — repo owner)
 - **Incident reference:** `wf_20260713_003` (REJECTED 2026-07-13T21:00:46Z, resolution `abandon`)
