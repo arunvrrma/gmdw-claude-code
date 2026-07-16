@@ -5,6 +5,7 @@ Commands:
   init        create a workflow (state=RECEIVED, sets ACTIVE, pins the policy)
   status      show the active workflow's state, counters, budget
   expected    show what artifact/agent the current state is waiting for
+  doctor      read-only preflight: are the governance hooks live this session?
   transition  request a state transition (table + guard validated)
   approve     record a human gate decision as an approval artifact
   accept      human recovery: accept a stranded, validly-produced artifact
@@ -152,6 +153,38 @@ def cmd_expected(a):
                           "note": "no artifact is produced in this state"}))
     else:
         print(json.dumps(exp))
+
+
+def cmd_doctor(a):
+    """Read-only preflight: is the GMDW enforcement plane actually live in THIS
+    session? Creates and mutates NOTHING (no state.json, ledger, ACTIVE, or run
+    file), so it is safe to run anytime, including before `init`.
+
+    It can report liveness despite writing nothing because of self-attestation:
+    run via Bash while the hooks are live, the PreToolUse gate fires on that very
+    Bash invocation and refreshes the heartbeat immediately before this reads it —
+    the same trick `wf init` relies on. A hooks-dark session gets no such refresh,
+    so the heartbeat is stale or absent and the plane reports as down.
+
+    Exit 0 when the hooks are live, 1 when they are not, so it is usable as a
+    scriptable preflight (e.g. `wf doctor && wf init --request ...`).
+    """
+    root = _root()
+    live, why = heartbeat.status(root)
+    active = S.active_id(root)
+    if a.json:
+        print(json.dumps({"hooks_live": live, "reason": why,
+                          "active_workflow": active}))
+    else:
+        print("✅ governance hooks are LIVE" if live
+              else "❌ governance hooks are NOT firing in this session")
+        print(f"   {why}")
+        print(f"   active workflow: {active or 'none'}")
+        if not live:
+            print("   → you are likely not rooted in the gmdw-claude-code project. "
+                  "Launch Claude Code with this repo as the project root "
+                  "(see docs/GETTING_STARTED.md), then retry.")
+    sys.exit(0 if live else 1)
 
 
 def _liveness_preflight(root, a):
@@ -448,6 +481,11 @@ def main():
     p = sub.add_parser("expected", help="what the current state is waiting for")
     p.add_argument("--workflow", default=None)
     p.set_defaults(fn=cmd_expected)
+
+    p = sub.add_parser("doctor", help="read-only: are the governance hooks live "
+                                      "in this session? (no side effects)")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.set_defaults(fn=cmd_doctor)
 
     p = sub.add_parser("transition", help="request a state transition")
     p.add_argument("to", choices=S.STATES)

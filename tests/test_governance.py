@@ -736,6 +736,34 @@ class TestGovernanceLiveness(unittest.TestCase):
         live, why = heartbeat.status(self.tmp)
         self.assertTrue(live, f"small forward skew should stay live: {why}")
 
+    def test_L9_doctor_reports_live_after_hook_fires(self):
+        # `wf doctor` is a read-only preflight: once a hook has written a fresh
+        # heartbeat it reports LIVE and exits 0, and it must create no workflow.
+        self.drive_hook()
+        r = self.wf("doctor")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("LIVE", r.stdout)
+        rj = self.wf("doctor", "--json")
+        self.assertEqual(rj.returncode, 0)
+        self.assertTrue(json.loads(rj.stdout)["hooks_live"])
+        self.assertFalse(S.active_id(self.tmp), "doctor must not create a workflow")
+
+    def test_L10_doctor_reports_dark_without_heartbeat(self):
+        # No heartbeat (hooks not firing): doctor reports the plane down, exits 1.
+        r = self.wf("doctor")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("NOT firing", r.stdout)
+        rj = self.wf("doctor", "--json")
+        self.assertEqual(rj.returncode, 1)
+        self.assertFalse(json.loads(rj.stdout)["hooks_live"])
+
+    def test_L11_doctor_reports_dark_when_heartbeat_stale(self):
+        # A stale heartbeat is treated as down, same as init / transition.
+        self.write_heartbeat(age_sec=10000)
+        r = self.wf("doctor")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("NOT firing", r.stdout)
+
 
 # =========================================================================== #
 # Recovery + mid-run liveness (ADR-001 Phase 2)

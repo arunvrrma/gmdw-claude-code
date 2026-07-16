@@ -41,10 +41,40 @@ code and tests, security and code review — happens automatically.
 
   If you see that, relaunch Claude Code rooted in this repo and retry.
 
-Quick health check (optional):
+### Setting up in VS Code / other IDEs
+
+The hooks that enforce GMDW only load when **`gmdw-claude-code` is the launch /
+workspace root** — the folder Claude Code treats as the project (it's identified by
+its `.claude/` directory). How you set that depends on the surface:
+
+- **Terminal (CLI):** `cd` into the repo and run `claude`. The nearest `.claude/`
+  above your working directory becomes the project root.
+- **VS Code / Cursor extension:** use **File → Open Folder** and open the
+  `gmdw-claude-code` folder *itself* as the workspace root — not a parent folder,
+  and avoid multi-root workspaces (in either case the repo's `.claude/settings.json`
+  may not be the one that loads, so the hooks won't register). You must also
+  **trust the workspace**: hooks execute code, and the extension won't run them in
+  Restricted Mode.
+- **Claude Code on the web:** start the session against this repository so its
+  `.claude/` is the checkout root.
+
+If the root is wrong you'll hit the *"governance hooks are not active"* refusal
+above — that's the liveness guard failing safe (no hooks → no enforcement → no
+run), not a bug. Relatedly, GMDW governs changes **in its own repo**; using it to
+change a *different* repo from a gmdw-rooted session is out of scope (see
+[KNOWN_LIMITATIONS](KNOWN_LIMITATIONS.md)).
+
+### Verify your setup
+
+One read-only command tells you whether the enforcement plane is actually live in
+this session — it creates no workflow and has no side effects:
+```bash
+.workflow/bin/wf doctor        # ✅ LIVE (exit 0), or ❌ not firing (exit 1)
+```
+Run it before your first `/gmdw` if you're unsure the root is right. Optionally,
+confirm the whole toolchain is healthy (standard library only — no `pip install`):
 ```bash
 python3 tests/test_governance.py     # the governance suite must pass
-.workflow/bin/wf --help              # see the CLI you'll rarely need to touch
 ```
 
 ---

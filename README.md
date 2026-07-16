@@ -61,6 +61,7 @@ walks one run end to end.
 
 Verify the toolchain any time (standard library only — no `pip install`):
 ```bash
+.workflow/bin/wf doctor              # are the governance hooks live here? (read-only)
 python3 tests/test_governance.py     # the governance suite must pass
 .workflow/bin/wf --help              # the CLI (you rarely touch it directly)
 ```
