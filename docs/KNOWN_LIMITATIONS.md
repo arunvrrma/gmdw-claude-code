@@ -81,8 +81,8 @@ escalation history; multi-user approver routing beyond the config stub.
 
 ## F. Confirmed in live operation (Workflow C — `wf_20260713_001`)
 
-Workflow C ran the **full** governed path against a *different* repository (`../external-admin`)
-than the GMDW project, from a session rooted in `external-workspace`. It converted two
+Workflow C ran the **full** governed path against a *different* repository
+than the GMDW project, from a session rooted in that other project. It converted two
 previously-forward-looking items into **observed** limitations. Neither is a defect against the
 approved architecture; both are boundaries of the current implementation, now witnessed live.
 The review controls exercised in the same run are recorded in

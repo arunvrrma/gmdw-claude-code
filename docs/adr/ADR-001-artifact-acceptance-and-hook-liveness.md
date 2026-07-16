@@ -12,7 +12,7 @@
 ## 1. Problem statement
 
 A GMDW workflow launched from a Claude Code session rooted **outside**
-`gmdw-claude-code` (an external-workspace session with this repo reachable on disk)
+`gmdw-claude-code` (a session rooted in a different project, with this repo reachable on disk)
 advanced `RECEIVED → CLASSIFYING → REPOSITORY_ANALYSIS`, produced a **schema-valid**
 `repo_analysis_v1.json`, and then deadlocked: `current.repo_analysis` stayed `0`,
 the guard rejected `REPOSITORY_ANALYSIS → PLANNING` ("repo_analysis artifact
@@ -39,7 +39,7 @@ From `.workflow/runs/wf_20260713_003/` (`state.json`, `decision_log.jsonl`):
 **Why the hooks were absent.** Claude Code loads hooks from the settings of the
 project the session was started in. GMDW's three hooks are registered only in this
 repo's `.claude/settings.json`, via commands that expand
-`$CLAUDE_PROJECT_DIR/.claude/hooks/…`. In a session rooted at external-workspace:
+`$CLAUDE_PROJECT_DIR/.claude/hooks/…`. In a session rooted in a different project:
 (a) this repo's settings are never loaded (additional working directories grant
 file access, not hook registration), and (b) even a globally-registered copy of the
 hook entries would resolve `$CLAUDE_PROJECT_DIR` to the wrong root. Meanwhile the

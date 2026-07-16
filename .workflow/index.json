@@ -1,34 +1,10 @@
 {
-  "wf_20260711_001": {
-    "title": "Review the unchanged (committed, git-clean) source code and docs of the external-kb repo at ~/work/external-workspace/auto",
+  "wf_20260714_001": {
+    "title": "Implement ADR-001 Phase 2: acceptance extraction, transition liveness, wf accept",
     "state": "REJECTED",
-    "created_at": "2026-07-11T08:31:06Z",
-    "closed_at": "2026-07-11T08:39:20Z",
-    "cost_usd_estimate": 0.0,
-    "tokens": 0
-  },
-  "wf_20260711_002": {
-    "title": "Review the unchanged (committed, git-clean) source code and docs of the external-kb repo at ~/work/external-workspace/auto",
-    "state": "REJECTED",
-    "created_at": "2026-07-11T08:54:06Z",
-    "closed_at": "2026-07-11T09:12:14Z",
-    "cost_usd_estimate": 1.0268,
-    "tokens": 190155
-  },
-  "wf_20260711_003": {
-    "title": "Review the unchanged (committed, git-clean) source code and docs of the external-kb repo at ~/work/external-workspace/auto",
-    "state": "REJECTED",
-    "created_at": "2026-07-11T09:14:21Z",
-    "closed_at": "2026-07-12T09:59:16Z",
-    "cost_usd_estimate": 1.7718,
-    "tokens": 236857
-  },
-  "wf_20260712_001": {
-    "title": "Review the unchanged (committed, git-clean) source code and docs of the external-kb repo at ~/work/external-workspace/auto",
-    "state": "COMPLETED",
-    "created_at": "2026-07-12T10:02:14Z",
-    "closed_at": "2026-07-12T12:12:46Z",
-    "cost_usd_estimate": 2.7938,
-    "tokens": 359193
+    "created_at": "2026-07-14T12:01:09Z",
+    "closed_at": "2026-07-15T14:48:57Z",
+    "cost_usd_estimate": 10.4959,
+    "tokens": 1232887
   }
 }

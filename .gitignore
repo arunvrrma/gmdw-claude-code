@@ -1,6 +1,12 @@
 __pycache__/
 *.pyc
 *.tmp
-.workflow/runs/*/artifacts/**/*.tmp
 .workflow/.hooks_heartbeat
 .pytest_cache/
+
+# Run evidence bundles are LOCAL by default — a run directory can contain detail
+# from whatever repository the workflow operated on. One curated GMDW-self run
+# (wf_20260714_001) is committed as an example; new runs stay untracked.
+.workflow/runs/
+# Stray top-level request scratch file written outside a run directory.
+.workflow/request.md
