@@ -6,19 +6,32 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-07-17
+
+Open-source publication release: adds the licensing and community-health surface a
+public repository needs, plus documentation hygiene. No governance behavior changes;
+the enforcement plane and the 51-test suite are untouched.
+
 ### Added
 - Apache-2.0 `LICENSE` and `NOTICE` (Copyright 2026 Arun Verma).
 - Community health files: `SECURITY.md` (private vulnerability / governance-bypass
-  reporting policy) and `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1).
+  reporting policy) and `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), each with a
+  concrete maintainer-contact route.
 - `.github/`: CI workflow running the governance suite plus syntax/JSON checks on
   push and PRs across Python 3.9/3.11/3.12; issue templates; a governance-aware PR
   template.
 - README: License and Contributing & security sections, plus an Anthropic
-  non-affiliation / trademark note.
+  non-affiliation / trademark note, and a note that `wf_20260714_001` is the one
+  committed example run.
 
 ### Changed
 - `CONTRIBUTING.md`: fixed a stale test count and removed a reference to
   already-deleted branches.
+- Moved superseded point-in-time docs (`HANDOFF`, `LIVE_VALIDATION_READINESS`,
+  `LIVE_VALIDATION_EXECUTION`, `RELEASE_CHECKLIST`) into `docs/history/` with a
+  historical-document banner, and fixed the inbound references.
+- Date-stamped the advisory `MODEL_RATES` snapshot in `gmdw/ledger.py` (budgets
+  remain enforced in tokens; the dollar estimate is advisory only).
 
 ## [0.2.0] — 2026-07-16
 
@@ -77,6 +90,7 @@ Frozen MVP baseline: the state machine, six subagents, three governance hooks, t
 `wf` CLI, nine artifact schemas, three policy profiles, and the governance test suite
 (26 tests). See `RELEASE_NOTES_v0.1.0.md`.
 
-[Unreleased]: https://github.com/arunvrrma/gmdw-claude-code/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/arunvrrma/gmdw-claude-code/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/arunvrrma/gmdw-claude-code/releases/tag/v0.2.1
 [0.2.0]: https://github.com/arunvrrma/gmdw-claude-code/releases/tag/v0.2.0
 [0.1.0-mvp]: https://github.com/arunvrrma/gmdw-claude-code/releases/tag/v0.1.0-mvp
