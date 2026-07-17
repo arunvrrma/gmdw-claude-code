@@ -1,13 +1,13 @@
-# GMDW — Governed Multi-Agent Delivery Workflow for Claude Code
+# GMDW - Governed Multi-Agent Delivery Workflow for Claude Code
 
 A controlled software-delivery workflow that runs specialized Claude Code subagents
 under a **state machine** with **hook-enforced governance**. Built so that every
 guardrail survives a misbehaving model: isolation, loop prevention, budget limits,
-scope enforcement, and artifact integrity are enforced by deterministic Python — not
+scope enforcement, and artifact integrity are enforced by deterministic Python - not
 by asking the model to behave.
 
 > **New here?** [**docs/GETTING_STARTED.md**](docs/GETTING_STARTED.md) is a
-> step-by-step walkthrough from the user's seat — start there. The rest of this
+> step-by-step walkthrough from the user's seat - start there. The rest of this
 > README is the architecture.
 
 ## Why it exists
@@ -52,14 +52,14 @@ Open this repo in Claude Code **as the project root**, then just describe the ch
 
 GMDW sizes the change, plans it, writes and reviews the code, and stops to ask your
 approval at the plan gate (on larger changes) and always before anything ships.
-That's the whole user experience — [**docs/GETTING_STARTED.md**](docs/GETTING_STARTED.md)
+That's the whole user experience - [**docs/GETTING_STARTED.md**](docs/GETTING_STARTED.md)
 walks one run end to end.
 
 > If `/gmdw` reports *"governance hooks are not active"*, you launched Claude Code
-> from a different project root — relaunch it rooted in this repo. That refusal is
+> from a different project root - relaunch it rooted in this repo. That refusal is
 > the liveness guard doing its job (no hooks → no enforcement → no run).
 
-Verify the toolchain any time (standard library only — no `pip install`):
+Verify the toolchain any time (standard library only - no `pip install`):
 ```bash
 .workflow/bin/wf doctor              # are the governance hooks live here? (read-only)
 python3 tests/test_governance.py     # the governance suite must pass
@@ -68,14 +68,14 @@ python3 tests/test_governance.py     # the governance suite must pass
 
 ## How governance is enforced (the three hooks)
 
-- **`pretooluse_gate.py`** (PreToolUse on Agent/Task, Write/Edit, Bash) — the boundary.
+- **`pretooluse_gate.py`** (PreToolUse on Agent/Task, Write/Edit, Bash) - the boundary.
   Validates agent invocations against the state machine and the invocation header,
   enforces invocation/revision/review/budget/deadline limits and the per-role model
   policy, and confines every write to the state's allowed scope. Denies push/PR
   without deployment approval. **Fails closed.**
-- **`posttooluse_ledger.py`** (PostToolUse) — accounts token usage per role, tracks
+- **`posttooluse_ledger.py`** (PostToolUse) - accounts token usage per role, tracks
   budget and consecutive failures, registers artifact hashes. Records only.
-- **`subagentstop_validate.py`** (SubagentStop) — the artifact acceptance gate. The
+- **`subagentstop_validate.py`** (SubagentStop) - the artifact acceptance gate. The
   decision itself (existence → schema → semantics: path existence, subject match,
   verdict consistency, deviation scope, **test re-verification** → counter bumps →
   version-pointer update → freeze) lives in `gmdw/accept.py`, shared verbatim by the
@@ -86,18 +86,18 @@ State, counters, budgets, and versioning live in `state.json`, mutated only thro
 `.workflow/bin/wf` and `.claude/hooks/gmdw/state.py`.
 
 All three hooks attest liveness on every firing: `wf init` refuses to start a
-workflow — and `wf transition` refuses to advance one — if that enforcement plane
+workflow - and `wf transition` refuses to advance one - if that enforcement plane
 isn't actually present in the session. Two human-attributed recovery commands
 (`wf accept`, `wf clear-invocation`) exist only for genuinely hooks-dark sessions
 and are denied while the hooks are live. (See ADR-001 for the design.)
 
 ## Policy profiles
 
-`standard` (default), `strict` (regulated/production — blocking plan gate on every
+`standard` (default), `strict` (regulated/production - blocking plan gate on every
 route, security review always on, fewer auto-retries, higher budget), `expedited`
-(prototypes — larger trivial threshold, lighter gates, cheaper models). Security
+(prototypes - larger trivial threshold, lighter gates, cheaper models). Security
 triggers and the deployment gate are **floors**: a profile can tighten them, never
-loosen them — enforced by `policy.validate_profile`. Set the active profile in
+loosen them - enforced by `policy.validate_profile`. Set the active profile in
 `.workflow/config.json`.
 
 ## Auditability
@@ -123,15 +123,15 @@ See `CLAUDE.md` for the annotated directory map and the architecture invariants.
 
 ## Contributing & security
 
-Contributions are welcome under the project's Apache-2.0 license — read
+Contributions are welcome under the project's Apache-2.0 license - read
 [CONTRIBUTING.md](CONTRIBUTING.md) first, since changes to the enforcement surface
 carry extra requirements (the golden rule is *governance is enforced by code, never
 by prompts*). Please **do not open a public issue** for a vulnerability or a way to
-bypass a governance guarantee — report it privately per [SECURITY.md](SECURITY.md).
+bypass a governance guarantee - report it privately per [SECURITY.md](SECURITY.md).
 
 ## License
 
-Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE) and
+Licensed under the Apache License, Version 2.0 - see [LICENSE](LICENSE) and
 [NOTICE](NOTICE). Copyright 2026 Arun Verma.
 
 GMDW is an independent project and is not affiliated with, sponsored by, or endorsed
