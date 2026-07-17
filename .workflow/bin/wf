@@ -32,6 +32,7 @@ _HERE = Path(__file__).resolve().parent
 _FALLBACK_ROOT = _HERE.parent.parent  # repo root when invoked in place
 sys.path.insert(0, str(_FALLBACK_ROOT / ".claude" / "hooks"))
 
+from gmdw import __version__ as GMDW_VERSION  # noqa: E402
 from gmdw import accept, heartbeat, ledger, policy, schemas  # noqa: E402
 from gmdw import state as S               # noqa: E402
 from gmdw.state import GmdwError          # noqa: E402
@@ -464,6 +465,7 @@ def cmd_close(a):
 def main():
     ap = argparse.ArgumentParser(prog="wf", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--version", action="version", version=f"GMDW wf {GMDW_VERSION}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("init", help="create a workflow")

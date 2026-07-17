@@ -26,6 +26,7 @@ guarantees remain enforced by code; the test suite grew from 26 to 50.
   `open_invocation` that would otherwise deadlock every transition.
 - **`wf doctor`** — a read-only, side-effect-free preflight that reports whether the
   governance hooks are live in the current session (exit 0 live / 1 not; `--json`).
+- **`wf --version`** — prints the CLI / package version.
 - **`docs/GETTING_STARTED.md`** — a user-facing walkthrough, including a "Setting up
   in VS Code / other IDEs" guide (project-root / workspace-trust requirements).
 - **`gmdw/accept.py`** — the extracted, single-home artifact-acceptance pipeline,
