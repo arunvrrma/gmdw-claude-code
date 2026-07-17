@@ -61,7 +61,8 @@ representative at an online or offline event.
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement privately through
 the repository's **Security** tab (Report a vulnerability / private report) or by
-contacting the maintainer directly. All complaints will be reviewed and
+contacting the maintainer directly via GitHub
+([@arunvrrma](https://github.com/arunvrrma)). All complaints will be reviewed and
 investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the

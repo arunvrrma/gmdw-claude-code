@@ -14,6 +14,7 @@ from pathlib import Path
 
 # Blended $/MTok estimates (assumes ~80/20 input/output mix) used only for the
 # advisory cost_usd_estimate field. Budgets are enforced in tokens, not dollars.
+# Snapshot taken July 2026; advisory only — re-check against current pricing.
 MODEL_RATES = {"opus": 9.0, "sonnet": 5.4, "haiku": 1.8}
 
 

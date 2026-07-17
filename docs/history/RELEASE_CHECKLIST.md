@@ -1,5 +1,9 @@
 # GMDW v0.1.0-mvp — Release Checklist
 
+> **Historical document.** Point-in-time snapshot retained for provenance; it
+> does not describe the current state. See `README.md` and
+> `docs/RELEASE_READINESS.md` for what is current.
+
 The gate for cutting the frozen MVP baseline. Every box must be checked (or an
 exception recorded with sign-off) before tagging `v0.1.0-mvp`. This release is the
 **MVP baseline** — code is frozen; live validation happens afterward on a separate

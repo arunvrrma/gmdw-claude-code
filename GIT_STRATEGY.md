@@ -126,4 +126,4 @@ git push -u origin live-validation
 
 After this, `git branch -a` shows `main`, `mvp-complete`, `live-validation` and the tag
 `v0.1.0-mvp`; live validation proceeds on `live-validation` per
-`LIVE_VALIDATION_EXECUTION.md`.
+`docs/history/LIVE_VALIDATION_EXECUTION.md`.

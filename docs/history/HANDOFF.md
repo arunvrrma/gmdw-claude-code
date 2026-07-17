@@ -1,5 +1,9 @@
 # GMDW — Implementation Handoff
 
+> **Historical document.** Point-in-time snapshot retained for provenance; it
+> does not describe the current state. See `README.md` and
+> `docs/RELEASE_READINESS.md` for what is current.
+
 **Audience:** the engineer running the first live validation in Claude Code.
 **Status at handoff:** MVP complete; 23/23 governance tests + a full trivial-route
 CLI lifecycle walk passing offline. Not yet exercised inside a live Claude Code

@@ -37,7 +37,7 @@ live plan and the two model/token open items, then re-score.
 
 ## Governance readiness — 4/5
 
-- **Justification:** every guarantee in `HANDOFF.md` §3 is enforced by a hook or guard
+- **Justification:** every guarantee in `docs/history/HANDOFF.md` §3 is enforced by a hook or guard
   and covered by an adversarial test. Structural isolation (no `Agent` tool on
   subagents) does not depend on runtime behavior at all. Counters are checked in two
   places (gate + guard).

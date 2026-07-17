@@ -1,5 +1,9 @@
 # GMDW — Live Validation Readiness
 
+> **Historical document.** Point-in-time snapshot retained for provenance; it
+> does not describe the current state. See `README.md` and
+> `docs/RELEASE_READINESS.md` for what is current.
+
 **Branch:** `live-validation` (isolated from the frozen `v0.1.0-mvp` baseline).
 **Purpose:** the single readiness artifact that gates the first live Claude Code run.
 It synthesizes `docs/LIVE_VALIDATION_PLAN.md` (V1–V8), `docs/FIRST_LIVE_RUN_CHECKLIST.md`,

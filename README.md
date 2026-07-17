@@ -107,6 +107,10 @@ Every workflow leaves a complete trail in `.workflow/runs/<id>/`:
 (sha256 of every artifact), immutable versioned artifacts, and `approvals/` (every
 human decision). The provenance of any shipped line is reconstructable end to end.
 
+One curated example run (`wf_20260714_001`) is committed for reference; new runs
+stay local by default (see `.gitignore`). Other run IDs cited in ADRs and historical
+docs were local runs and are intentionally not in the tree.
+
 ## Requirements
 
 Python 3.9+ (standard library only). Git (for the implementation base-commit and
