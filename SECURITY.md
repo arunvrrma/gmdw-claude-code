@@ -22,7 +22,8 @@ Report it privately through GitHub:
 
 1. Go to the repository's **Security** tab → **Report a vulnerability** (GitHub
    Private Vulnerability Reporting), or
-2. contact the maintainer directly if you cannot use that channel.
+2. contact the maintainer directly via their GitHub profile
+   ([@arunvrrma](https://github.com/arunvrrma)) if you cannot use that channel.
 
 Please include: the affected component (a hook, a guard, the `wf` CLI, a schema, or
 a policy), the governance guarantee you believe is broken, and a minimal
