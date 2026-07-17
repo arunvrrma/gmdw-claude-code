@@ -21,6 +21,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / ".claude" / "hooks"))
+from gmdw import __version__  # noqa: E402
 from gmdw import heartbeat  # noqa: E402
 from gmdw import ledger  # noqa: E402
 from gmdw import state as S  # noqa: E402
@@ -763,6 +764,13 @@ class TestGovernanceLiveness(unittest.TestCase):
         r = self.wf("doctor")
         self.assertEqual(r.returncode, 1)
         self.assertIn("NOT firing", r.stdout)
+
+    def test_L12_version_flag_prints_package_version(self):
+        # `wf --version` must print the gmdw package version and exit 0. This is
+        # a plain informational flag, not gated by liveness (no heartbeat needed).
+        r = self.wf("--version")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(__version__, r.stdout)
 
 
 # =========================================================================== #
