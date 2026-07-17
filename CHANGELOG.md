@@ -4,6 +4,22 @@ All notable changes to GMDW are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Apache-2.0 `LICENSE` and `NOTICE` (Copyright 2026 Arun Verma).
+- Community health files: `SECURITY.md` (private vulnerability / governance-bypass
+  reporting policy) and `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1).
+- `.github/`: CI workflow running the governance suite plus syntax/JSON checks on
+  push and PRs across Python 3.9/3.11/3.12; issue templates; a governance-aware PR
+  template.
+- README: License and Contributing & security sections, plus an Anthropic
+  non-affiliation / trademark note.
+
+### Changed
+- `CONTRIBUTING.md`: fixed a stale test count and removed a reference to
+  already-deleted branches.
+
 ## [0.2.0] — 2026-07-16
 
 First general-use release. Hardens the MVP's one fail-open risk (a session where the
@@ -61,5 +77,6 @@ Frozen MVP baseline: the state machine, six subagents, three governance hooks, t
 `wf` CLI, nine artifact schemas, three policy profiles, and the governance test suite
 (26 tests). See `RELEASE_NOTES_v0.1.0.md`.
 
+[Unreleased]: https://github.com/arunvrrma/gmdw-claude-code/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/arunvrrma/gmdw-claude-code/releases/tag/v0.2.0
 [0.1.0-mvp]: https://github.com/arunvrrma/gmdw-claude-code/releases/tag/v0.1.0-mvp
