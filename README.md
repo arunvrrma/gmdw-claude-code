@@ -116,3 +116,20 @@ scope checks). No third-party dependencies.
 
 See `CLAUDE.md` for the annotated directory map and the architecture invariants.
 `tests/README.md` documents the governance scenarios and what each proves.
+
+## Contributing & security
+
+Contributions are welcome under the project's Apache-2.0 license — read
+[CONTRIBUTING.md](CONTRIBUTING.md) first, since changes to the enforcement surface
+carry extra requirements (the golden rule is *governance is enforced by code, never
+by prompts*). Please **do not open a public issue** for a vulnerability or a way to
+bypass a governance guarantee — report it privately per [SECURITY.md](SECURITY.md).
+
+## License
+
+Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE) and
+[NOTICE](NOTICE). Copyright 2026 Arun Verma.
+
+GMDW is an independent project and is not affiliated with, sponsored by, or endorsed
+by Anthropic; "Claude" and "Claude Code" are trademarks of Anthropic, referenced
+only to describe the environment GMDW runs in.

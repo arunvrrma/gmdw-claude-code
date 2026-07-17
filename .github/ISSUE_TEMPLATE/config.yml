@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security / governance-bypass vulnerability
+    url: https://github.com/arunvrrma/gmdw-claude-code/security/advisories/new
+    about: Do NOT open a public issue for a way to bypass a governance guarantee. Report it privately here. See SECURITY.md.
+  - name: Question / usage help
+    url: https://github.com/arunvrrma/gmdw-claude-code/discussions
+    about: For "how do I use this" questions, start a Discussion (see docs/GETTING_STARTED.md first).

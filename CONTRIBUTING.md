@@ -14,8 +14,7 @@ substitute for an enforcement check.
 
 ## Development workflow
 
-1. Branch from the appropriate base (see `GIT_STRATEGY.md`): feature work off `main`;
-   live-validation findings off `live-validation`.
+1. Branch off `main` for your change.
 2. Make the change. If it touches enforcement (`state.py`, `policy.py`, the hooks, the
    schemas, or the CLI guards), add or update a governance test in the same PR.
 3. Run the full verification (see Testing) — it must pass locally.
@@ -24,11 +23,10 @@ substitute for an enforcement check.
 5. Open a PR against the base branch. PRs that change enforcement require a second
    reviewer and an explicit note on which guarantee is affected.
 
-## Branch strategy (summary — full detail in `GIT_STRATEGY.md`)
+## Branch strategy
 
-- `main` — integration branch; releases are tagged here.
-- `mvp-complete` — the frozen v0.1.0 baseline; **do not commit to it**.
-- `live-validation` — live-run work and findings; merges back to `main` after validation.
+- `main` — the integration branch; releases are tagged here (`vMAJOR.MINOR.PATCH`).
+- Work on short-lived feature branches off `main` and open a PR back into it.
 
 ## Code standards
 
@@ -67,7 +65,7 @@ to them with the same scrutiny as runtime code.
 Before any PR:
 
 ```bash
-python3 tests/test_governance.py            # must print OK (23 tests)
+python3 tests/test_governance.py            # must print OK (51 tests)
 for f in .claude/hooks/*.py .claude/hooks/gmdw/*.py .workflow/bin/wf; do \
   python3 -c "import ast;ast.parse(open('$f').read())" || echo "SYNTAX: $f"; done
 for f in .workflow/schemas/*.json .workflow/policies/*.json; do \
@@ -93,3 +91,9 @@ for f in .workflow/schemas/*.json .workflow/policies/*.json; do \
 
 Imperative subject; body explains *why* and which guarantee is affected if enforcement
 changes. Reference the governance test that proves the change where applicable.
+
+## License of contributions
+
+By contributing to GMDW you agree that your contributions are licensed under the
+project's [Apache License 2.0](LICENSE) (inbound = outbound), and you confirm you
+have the right to submit the work under that license.

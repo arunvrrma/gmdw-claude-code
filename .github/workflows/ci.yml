@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  governance-suite:
+    name: Governance suite (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Governance verification suite (stdlib only — no install)
+        run: python3 tests/test_governance.py
+
+      - name: Syntax check hooks + CLI
+        run: |
+          for f in .claude/hooks/*.py .claude/hooks/gmdw/*.py .workflow/bin/wf; do
+            python3 -c "import ast,sys; ast.parse(open('$f').read())"
+          done
+
+      - name: Schemas + policies are valid JSON
+        run: |
+          for f in .workflow/schemas/*.json .workflow/policies/*.json; do
+            python3 -c "import json,sys; json.load(open('$f'))"
+          done

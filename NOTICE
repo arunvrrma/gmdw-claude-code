@@ -1,0 +1,14 @@
+GMDW — Governed Multi-Agent Delivery Workflow
+Copyright 2026 Arun Verma
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this software except in compliance with the License. A copy of the License is in
+the LICENSE file, and at http://www.apache.org/licenses/LICENSE-2.0.
+
+This software is written in the Python standard library only and bundles no
+third-party code.
+
+GMDW targets Anthropic's Claude Code. It is an independent project and is not
+affiliated with, sponsored by, or endorsed by Anthropic. "Claude" and "Claude
+Code" are trademarks of Anthropic, used here only to describe the environment this
+software runs in.
