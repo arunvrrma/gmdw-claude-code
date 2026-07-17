@@ -1,5 +1,9 @@
 # GMDW — Live Validation Execution
 
+> **Historical document.** Point-in-time snapshot retained for provenance; it
+> does not describe the current state. See `README.md` and
+> `docs/RELEASE_READINESS.md` for what is current.
+
 The exact, operator-followable process for running live validation on the
 `live-validation` branch. It ties together `docs/LIVE_VALIDATION_PLAN.md` (the V1–V8
 checks), `docs/SMOKE_TESTS.md` (Workflows A/B/C), and `docs/ADVERSARIAL_VALIDATION.md`

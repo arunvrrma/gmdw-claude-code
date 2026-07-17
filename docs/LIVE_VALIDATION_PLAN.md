@@ -154,4 +154,4 @@ resolves `$CLAUDE_PROJECT_DIR` (start Claude Code in the repo root).
 All of V1–V8 pass, **or** any deviation is one of the accepted coarser modes named in
 `KNOWN_LIMITATIONS.md` (estimated tokens R2, advisory model policy R3) and is recorded
 in the run log with its rationale. Q1–Q5 are answered. No governance guarantee from
-`HANDOFF.md` §3 is observed to fail.
+`docs/history/HANDOFF.md` §3 is observed to fail.
