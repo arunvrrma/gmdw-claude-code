@@ -36,6 +36,14 @@ import json
 import os
 from pathlib import Path
 
+# The three hook scripts the enforcement plane consists of, and the settings
+# event each must be wired to.
+REQUIRED_HOOKS = {
+    "PreToolUse": "pretooluse_gate.py",
+    "PostToolUse": "posttooluse_ledger.py",
+    "SubagentStop": "subagentstop_validate.py",
+}
+
 # Run-dir-relative to the repo root, alongside ACTIVE / config.json.
 HEARTBEAT_REL = ".workflow/.hooks_heartbeat"
 
@@ -124,3 +132,39 @@ def status(root) -> tuple[bool, str]:
                        f"{max_age_sec()}s); the enforcement hooks are not firing "
                        f"in this session")
     return True, f"governance hooks live (heartbeat {int(age)}s old)"
+
+
+def enforcement_installed(root) -> tuple:
+    """(installed, reason) — is the enforcement plane *wired up* in this repo?
+
+    The deterministic orchestrator (v0.3.0) is an ordinary Python process, so it
+    cannot self-attest the way an in-session ``wf init`` does: no hook has fired
+    yet when it starts. What it can check before spending anything is that the
+    project's settings register all three hooks and the scripts they name exist.
+
+    That is a static check and it says nothing about whether the hooks actually
+    fire — which is why the orchestrator *also* requires a hook-sourced ledger
+    event from each agent invocation (see ``ledger.hook_event_since_last_transition``).
+    Static wiring before, dynamic proof after.
+    """
+    p = Path(root) / ".claude" / "settings.json"
+    if not p.exists():
+        return False, "no .claude/settings.json; the governance hooks are not registered"
+    try:
+        settings = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        return False, f".claude/settings.json is unreadable: {e}"
+    hooks = settings.get("hooks") or {}
+    missing = []
+    for event, script in REQUIRED_HOOKS.items():
+        entries = hooks.get(event) or []
+        wired = any(script in (h.get("command") or "")
+                    for group in entries for h in (group.get("hooks") or []))
+        if not wired:
+            missing.append(f"{event} -> {script}")
+        elif not (Path(root) / ".claude" / "hooks" / script).exists():
+            missing.append(f"{event} -> {script} (registered but the file is missing)")
+    if missing:
+        return False, ("the governance hooks are not fully registered in "
+                       ".claude/settings.json: " + "; ".join(missing))
+    return True, "all three governance hooks are registered and present"

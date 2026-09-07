@@ -23,14 +23,30 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Artifact-format contract
+        run: python3 tests/test_parsers.py
+
       - name: Governance verification suite (stdlib only — no install)
         run: python3 tests/test_governance.py
 
-      - name: Syntax check hooks + CLI
+      - name: Deterministic orchestrator (no model is called)
+        run: python3 tests/test_orchestrator.py < /dev/null
+
+      - name: Syntax check the runtime, hooks and CLI
         run: |
-          for f in .claude/hooks/*.py .claude/hooks/gmdw/*.py .workflow/bin/wf; do
+          for f in .claude/hooks/*.py gmdw/*.py .workflow/bin/wf; do
             python3 -c "import ast,sys; ast.parse(open('$f').read())"
           done
+
+      - name: Policy profiles pass their own floors
+        run: >
+          python3 -c "import sys; sys.path.insert(0,'.');
+          from gmdw import policy;
+          errs = {n: policy.validate_profile(policy.load_profile('.', n)[0])
+          for n in ('standard','strict','expedited')};
+          bad = {n: e for n, e in errs.items() if e};
+          print(bad or 'all profiles OK');
+          sys.exit(1 if bad else 0)"
 
       - name: Schemas + policies are valid JSON
         run: |

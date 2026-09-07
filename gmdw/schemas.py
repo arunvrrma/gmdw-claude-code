@@ -1,4 +1,10 @@
-"""GMDW schemas — loading + validation of workflow artifacts.
+"""GMDW schemas — JSON-Schema-subset validation.
+
+Since v0.3.0 the agent-authored artifacts are structured Markdown, validated by
+:mod:`gmdw.parsers`. JSON survives in exactly one place: the **approval record**,
+which is machine-written by ``wf approve`` (never by a model), is small and
+closed, and is the artifact the APPROVED and COMPLETED guards read. Keeping it
+JSON keeps the human-decision record exact.
 
 Schemas are authored as valid JSON Schema Draft 2020-12 documents. Because the
 runtime must be stdlib-only, validation is performed by a deliberate SUBSET
@@ -14,19 +20,10 @@ from __future__ import annotations
 
 import json
 import re
-from functools import lru_cache
 from pathlib import Path
 
 # logical artifact type -> schema file (basename without .schema.json)
 SCHEMA_FOR_TYPE = {
-    "classification": "classification",
-    "repo_analysis": "repo_analysis",
-    "plan": "plan",
-    "plan_review": "review",
-    "code_review": "review",
-    "security_review_plan": "security_review",
-    "security_review_code": "security_review",
-    "implementation": "implementation_manifest",
     "approval": "approval",
 }
 
@@ -100,10 +97,9 @@ def validate(instance, schema: dict, path: str = "$") -> list:
 
 
 def validate_artifact(root, artifact: dict, logical_type: str) -> list:
-    """Validate an artifact against the shared envelope schema AND its
-    type-specific schema. `logical_type` is a key of SCHEMA_FOR_TYPE."""
+    """Validate a JSON artifact against its schema. `logical_type` is a key of
+    SCHEMA_FOR_TYPE (only 'approval' since v0.3.0)."""
     if logical_type not in SCHEMA_FOR_TYPE:
-        return [f"unknown artifact type: {logical_type}"]
-    errs = validate(artifact, load_schema(root, "envelope"), "$")
-    errs += validate(artifact, load_schema(root, SCHEMA_FOR_TYPE[logical_type]), "$")
-    return errs
+        return [f"unknown JSON artifact type: {logical_type} "
+                f"(Markdown artifacts are validated by gmdw.parsers)"]
+    return validate(artifact, load_schema(root, SCHEMA_FOR_TYPE[logical_type]), "$")

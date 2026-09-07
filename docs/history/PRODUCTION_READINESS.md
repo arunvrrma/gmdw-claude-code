@@ -1,5 +1,11 @@
 # GMDW — Production Readiness Review
 
+> **Historical (v0.2.x).** This document describes the six-agent,
+> LLM-orchestrated architecture that v0.3.0 replaced, and the validation
+> done against it. It is kept for provenance. For what GMDW is now, see
+> [`MIGRATION.md`](../../MIGRATION.md), [`docs/KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md)
+> and [`docs/SMOKE_TESTS.md`](../SMOKE_TESTS.md).
+
 > **Historical (MVP / v0.1.0).** This is the MVP-era assessment. For the current
 > general-use (v0.2.0) re-score — several gaps below are now closed (the silent
 > hook-non-firing risk, the manual orphan-clear) — see

@@ -2,15 +2,29 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://gmdw.local/schemas/approval.schema.json",
   "title": "GMDW human approval record",
+  "description": "The one GMDW artifact still authored as JSON, because a machine writes it: `wf approve` and the orchestrator's gate, never a model. It is the record the APPROVED and COMPLETED guards read, so it carries its own envelope rather than sharing one. `human_approved` is the field that opens FINAL_APPROVAL -> APPROVED; `auto_approved` distinguishes a --auto-approve waiver from a person at a prompt, so an auditor can tell the two apart without inferring it from the decision word.",
   "type": "object",
-  "required": ["gate", "decision", "by", "at", "subject_ref"],
+  "required": ["artifact_type", "workflow_id", "version", "produced_by",
+               "input_artifact_refs", "created_at", "status",
+               "gate", "decision", "human_approved", "auto_approved",
+               "by", "at", "subject_ref"],
   "properties": {
+    "artifact_type": { "const": "approval" },
+    "workflow_id": { "type": "string", "pattern": "^wf_[0-9]{8}_[0-9]{3}$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "produced_by": { "const": "human" },
+    "input_artifact_refs": { "type": "array", "items": { "type": "string" } },
+    "created_at": { "type": "string" },
+    "status": { "enum": ["complete", "blocked", "error"] },
     "gate": {
-      "enum": ["plan", "architecture", "deployment", "escalation", "route_downgrade"]
+      "enum": ["plan", "final", "architecture", "deployment", "escalation",
+               "route_downgrade"]
     },
     "decision": {
       "enum": ["approved", "changes_requested", "rejected", "force_approved"]
     },
+    "human_approved": { "type": "boolean" },
+    "auto_approved": { "type": "boolean" },
     "by": { "type": "string" },
     "at": { "type": "string" },
     "subject_ref": { "type": "string" },

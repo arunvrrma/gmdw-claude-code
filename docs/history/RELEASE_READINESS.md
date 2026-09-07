@@ -1,5 +1,11 @@
 # GMDW — Release Readiness (v0.2.0, general use)
 
+> **Historical (v0.2.x).** This document describes the six-agent,
+> LLM-orchestrated architecture that v0.3.0 replaced, and the validation
+> done against it. It is kept for provenance. For what GMDW is now, see
+> [`MIGRATION.md`](../../MIGRATION.md), [`docs/KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md)
+> and [`docs/SMOKE_TESTS.md`](../SMOKE_TESTS.md).
+
 - **Date:** 2026-07-17
 - **Scope:** readiness of the `release-v0.2.0` line for a general-use (public) release.
 - **Supersedes** (for v0.2.0) the MVP-era [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md).
@@ -56,7 +62,7 @@ infrastructure the maintainer owns (see §5).
 
 ## 4. Known limitations (unchanged in spirit; fail-closed)
 
-Tracked honestly in [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md): single-active-workflow;
+Tracked honestly in [`KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md): single-active-workflow;
 the Bash gate is pattern-based (protected *files* stay safe at the Write layer); the
 token budget is an estimate; a few recovery conveniences (`wf extend-deadline`, budget
 adjustment) are not yet in-governance. None is a governance hole.

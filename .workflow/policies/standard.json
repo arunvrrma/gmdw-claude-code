@@ -1,6 +1,6 @@
 {
   "name": "standard",
-  "description": "Default GMDW governance profile. Matches the approved architecture.",
+  "description": "Default GMDW governance profile. Three agents, both human gates blocking on medium and full, waivable only on the trivial route.",
   "routing": {
     "t1": 3,
     "t2": 8,
@@ -14,17 +14,18 @@
     "max_plan_revisions": 2,
     "max_impl_revisions": 3,
     "max_review_cycles": 6,
-    "max_agent_invocations": 14,
+    "max_agent_invocations": 8,
     "per_invocation_timeout_min": 30,
     "wall_clock_hours": 12
   },
   "budget": {
-    "token_budget": 2000000,
+    "token_budget": 2500000,
     "soft_threshold_pct": 80,
-    "cost_ceiling_usd": 25
+    "cost_ceiling_usd": 12
   },
   "gates": {
-    "plan_approval": { "trivial": "off", "medium": "notify", "full": "blocking" },
+    "plan_approval": { "trivial": "off", "medium": "blocking", "full": "blocking" },
+    "final_approval": { "trivial": "off", "medium": "blocking", "full": "blocking" },
     "architecture_approval": { "enabled": true,
                                "trigger": { "dimension": "architectural", "min": 2 } },
     "deployment_approval": "blocking"
@@ -40,13 +41,9 @@
     "tamper_check_on_finalize": true
   },
   "models": {
-    "orchestrator":      { "model": "opus",   "effort": "high" },
-    "repo-analyst":      { "model": "sonnet", "effort": "medium" },
-    "planner":           { "model": "opus",   "effort": "high" },
-    "plan-reviewer":     { "model": "opus",   "effort": "high" },
-    "implementor":       { "model": "sonnet", "effort": "high" },
-    "security-reviewer": { "model": "opus",   "effort": "high" },
-    "code-reviewer":     { "model": "opus",   "effort": "high" },
+    "analyst-planner": { "model": "sonnet", "effort": "high" },
+    "implementor":     { "model": "opus",   "effort": "high" },
+    "reviewer":        { "model": "sonnet", "effort": "high" },
     "escalate_implementor_after_revisions": 1
   },
   "finalization": { "mode": "pr", "require_ci_green": false }

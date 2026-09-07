@@ -5,28 +5,45 @@ Intercepts Agent/Task (subagent invocations), Write/Edit/MultiEdit (file
 writes), and Bash (shell commands). Validates every action against
 state.json, the pinned policy profile, and the artifact registry.
 
+Since v0.3.0 this hook runs *inside the agent's own Claude Code session*, which
+the deterministic orchestrator started. The orchestrator decides which stage runs
+and refuses to accept an ungoverned one; this gate decides what that stage may
+actually do while it runs. The division is the point: routing is a loop, and
+confinement is a boundary, and neither should be asked to do the other's job.
+
 FAIL-CLOSED: any internal error while a workflow is ACTIVE denies the action.
 
 Deny protocol: emit the PreToolUse hookSpecificOutput JSON with
 permissionDecision=deny; the reason is surfaced to the model so its only
-legal next moves are explicit (usually: escalate).
+legal next moves are explicit (usually: write the artifact it was asked for,
+or declare itself blocked).
 """
 from __future__ import annotations
 
-import datetime
 import json
 import os
 import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gmdw import heartbeat, ledger, policy  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from gmdw import heartbeat, ledger  # noqa: E402
 from gmdw import state as S      # noqa: E402
 from gmdw.state import GmdwError  # noqa: E402
 
+# Set by main() once the repo and workflow are known, so deny() can leave an
+# audit record. A denial nobody can find later is only half a guardrail.
+_CTX = {"root": None, "wid": None, "tool": None}
+
 
 def deny(reason: str):
+    root, wid = _CTX.get("root"), _CTX.get("wid")
+    if root and wid:
+        try:
+            ledger.log(root, wid, "gate_denied", tool=_CTX.get("tool"),
+                       reason=reason[:800])
+        except OSError:
+            pass
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
@@ -44,6 +61,7 @@ def allow():
 # --------------------------------------------------------------------------- #
 
 _PROTECTED_PREFIXES = (
+    "gmdw/",  # the orchestrator + runtime library itself
     ".workflow/bin/", ".workflow/schemas/", ".workflow/policies/",
     ".claude/hooks/", ".claude/agents/", ".claude/commands/",
 )
@@ -77,31 +95,44 @@ def _relpath(path: str, root: Path, cwd: str) -> str | None:
         return None
 
 
+def _role() -> str | None:
+    """The role the orchestrator started this session as, if any. Set in the
+    child's environment by gmdw.runner; absent in an ordinary session."""
+    return os.environ.get("GMDW_ROLE") or None
+
+
+def _check_role(st: dict) -> None:
+    """An agent session may only act in the stage it was started for.
+
+    The orchestrator sets GMDW_ROLE when it launches a child. If that role does
+    not match the state's agent, something is out of step — a stale session
+    resumed against a workflow that has since moved on — and everything it does
+    from here would be scoped against the wrong plan.
+    """
+    role = _role()
+    if not role:
+        return
+    want = S.AGENT_FOR_STATE.get(st["state"])
+    if want and role != want:
+        deny(f"this session was started as '{role}' but the workflow is in "
+             f"{st['state']}, which belongs to '{want}'. The session is stale; "
+             f"stop and let the orchestrator start the right stage.")
+
+
 # --------------------------------------------------------------------------- #
 # Agent invocation gate
 # --------------------------------------------------------------------------- #
 
-def _parse_header(prompt: str) -> dict | None:
-    if "GMDW-INVOCATION" not in prompt:
-        return None
-    hdr, seen = {}, False
-    for line in prompt.splitlines():
-        line = line.strip()
-        if line == "GMDW-INVOCATION":
-            seen = True
-            continue
-        if not seen:
-            continue
-        m = re.match(r"^(workflow_id|agent|state|output_artifact):\s*(\S+)$", line)
-        if m:
-            hdr[m.group(1)] = m.group(2)
-            continue
-        if line.startswith("inputs:") or line == "":
-            break
-    return hdr if {"workflow_id", "agent", "output_artifact"} <= set(hdr) else None
-
-
 def gate_agent(root: Path, wid: str | None, ti: dict):
+    """Subagent invocation.
+
+    Under the v0.2 architecture an LLM Orchestrator invoked subagents and this
+    gate cross-checked a GMDW-INVOCATION header against the state machine.
+    Since v0.3.0 the orchestrator is a Python process that starts agents
+    directly, so *nothing inside a governed session has any business spawning a
+    subagent*. There is no header to check any more, and no legitimate caller to
+    check it for: the answer is simply no.
+    """
     if not wid:
         cfg_p = root / ".workflow" / "config.json"
         cfg = json.loads(cfg_p.read_text(encoding="utf-8")) if cfg_p.exists() else {}
@@ -110,79 +141,12 @@ def gate_agent(root: Path, wid: str | None, ti: dict):
         deny("no active GMDW workflow; subagent invocation is prohibited by "
              "policy (start one with /gmdw or set allow_non_gmdw_subagents)")
 
-    _, st = S.load_state(root, wid)
-    prof = st["policy"]["snapshot"]
-
-    hdr = _parse_header(ti.get("prompt", "") or "")
-    if not hdr:
-        deny("invocation prompt lacks a valid GMDW-INVOCATION header "
-             "(workflow_id, agent, state, output_artifact)")
-    if hdr["workflow_id"] != wid:
-        deny(f"header workflow_id {hdr['workflow_id']} != ACTIVE workflow {wid}")
-
-    sub = ti.get("subagent_type", "") or ""
-    if hdr["agent"] != sub:
-        deny(f"header agent '{hdr['agent']}' != subagent_type '{sub}'")
-
-    exp = S.expected(root, st)
-    if not exp or not exp.get("agent"):
-        deny(f"state {st['state']} does not permit any agent invocation")
-    if sub != exp["agent"]:
-        deny(f"state {st['state']} requires agent '{exp['agent']}', not '{sub}'")
-    if hdr["output_artifact"] != exp["path"]:
-        deny(f"output_artifact must be {exp['path']} (next {exp['artifact_type']} "
-             f"version is v{exp['version']})")
-
-    c, lim, b = st["counters"], st["limits"], st["budget"]
-    if c["agent_invocations"] >= lim["max_agent_invocations"]:
-        deny(f"invocation limit reached ({lim['max_agent_invocations']}); "
-             f"the only legal move is escalation (wf transition ESCALATED)")
-    if c["consecutive_failures"] >= 2:
-        deny("two consecutive agent failures; escalate to a human")
-    if st["state"] == "PLANNING" and exp["version"] > 1 and \
-            c["plan_revisions"] >= lim["max_plan_revisions"]:
-        deny("plan revision limit reached; escalate")
-    if st["state"] == "IMPLEMENTING" and exp["version"] > 1 and \
-            c["impl_revisions"] >= lim["max_impl_revisions"]:
-        deny("implementation revision limit reached; escalate")
-    if exp["artifact_type"] in S.REVIEW_TYPES and \
-            c["review_cycles"] >= lim["max_review_cycles"]:
-        deny(f"review cycle limit reached ({lim['max_review_cycles']}); escalate")
-
-    if b["tokens_consumed_estimate"] >= b["token_budget"]:
-        deny(f"token budget exhausted ({b['tokens_consumed_estimate']}/"
-             f"{b['token_budget']}); escalate")
-    deadline = datetime.datetime.strptime(
-        b["deadline"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
-    if datetime.datetime.now(datetime.timezone.utc) >= deadline:
-        deny(f"wall-clock deadline {b['deadline']} passed; escalate")
-
-    soft = b["token_budget"] * prof["budget"]["soft_threshold_pct"] // 100
-    if b["tokens_consumed_estimate"] >= soft and not st["flags"]["budget_warning"]:
-        st["flags"]["budget_warning"] = True
-        ledger.log(root, wid, "budget_warning",
-                   consumed=b["tokens_consumed_estimate"], budget=b["token_budget"])
-
-    want = policy.model_for_role(prof, sub)
-    got = ti.get("model")
-    if got and want and got != want:
-        deny(f"policy assigns model '{want}' to {sub}; requested '{got}'")
-
-    if st.get("open_invocation"):
-        deny(f"another invocation is already open "
-             f"({st['open_invocation'].get('agent')}); single-flight only")
-
-    st["open_invocation"] = {
-        "agent": sub, "started_at": S.utcnow(),
-        "expected_artifact": exp["path"], "expected_type": exp["artifact_type"],
-        "version": exp["version"], "retries": 0,
-    }
-    st["counters"]["agent_invocations"] += 1
-    S.save_state(root, wid, st)
-    ledger.log(root, wid, "invocation_requested", agent=sub,
-               expected=exp["path"],
-               invocations=st["counters"]["agent_invocations"])
-    allow()
+    sub = ti.get("subagent_type", "") or "?"
+    deny(f"agents may not invoke subagents (requested '{sub}'). The deterministic "
+         f"orchestrator is the only component that starts an agent, one at a "
+         f"time, with the stage's scope. If you cannot finish inside this stage, "
+         f"write your artifact with `status: blocked` and a precise "
+         f"blocked_reason, and stop.")
 
 
 # --------------------------------------------------------------------------- #
@@ -204,6 +168,7 @@ def gate_write(root: Path, wid: str | None, ti: dict, cwd: str):
              f"workflow is active")
 
     _, st = S.load_state(root, wid)
+    _check_role(st)
     run_prefix = f".workflow/runs/{wid}/"
 
     if rel.startswith(".workflow/runs/") and not rel.startswith(run_prefix):
@@ -212,21 +177,24 @@ def gate_write(root: Path, wid: str | None, ti: dict, cwd: str):
     if rel.startswith(run_prefix + "artifacts/"):
         run_rel = rel[len(run_prefix):]
         if run_rel.startswith("artifacts/approvals/"):
-            deny("approval artifacts are written only by 'wf approve'")
+            deny("approval artifacts record a human decision and are written "
+                 "only by 'wf approve' / the orchestrator's gate")
         if ledger.is_frozen(root, wid, run_rel):
             deny(f"'{run_rel}' is an accepted artifact version and is immutable; "
                  f"produce the next version instead")
         exp = S.expected(root, st)
         if not exp:
             deny(f"state {st['state']} does not accept artifact writes")
-        if exp["artifact_type"] == "implementation":
-            allowed_dir = os.path.dirname(exp["path"]) + "/"
-            if rel == exp["path"] or rel.startswith(allowed_dir):
+        # The Analyst-Planner writes three artifacts, so the allowlist is a set.
+        if rel in exp["writable_paths"]:
+            allow()
+        # An implementation is a directory (manifest.md, diff.patch, test_output).
+        for spec in exp["artifacts"]:
+            if spec["artifact_type"] == "implementation" and \
+                    rel.startswith(os.path.dirname(spec["path"]) + "/"):
                 allow()
-            deny(f"in {st['state']}, artifact writes are limited to {allowed_dir}")
-        if rel != exp["path"]:
-            deny(f"in {st['state']}, the only writable artifact is {exp['path']}")
-        allow()
+        deny(f"in {st['state']}, the writable artifacts are "
+             f"{exp['writable_paths']} — not '{rel}'")
 
     if rel.startswith(run_prefix):
         deny(f"'{rel}' is not a writable location inside the run directory")
@@ -237,18 +205,16 @@ def gate_write(root: Path, wid: str | None, ti: dict, cwd: str):
         deny(f"source writes are not permitted in state {s} "
              f"(only the Implementor, in IMPLEMENTING, edits the source tree)")
 
-    if st["route"] == "trivial":
-        allow()  # trivial route: no plan; protected paths still apply
-
     plan = S.load_artifact(root, st, "plan")
     if not plan:
-        deny("no plan on record; cannot scope writes")
+        deny("no accepted plan on record; cannot scope writes")
     planned = {f["path"] for f in plan.get("files", [])
                if f.get("action") in ("create", "modify")}
     if rel in planned or rel.startswith(("tests/", "test/", "docs/")):
         allow()
-    deny(f"write outside the approved plan's scope: '{rel}'. Declare a "
-         f"deviation in the manifest and escalate, or stay within: "
+    deny(f"write outside the approved plan's scope: '{rel}'. The plan's "
+         f"'## Files In Scope' is the allowlist. Declare a deviation in the "
+         f"manifest and let the orchestrator escalate, or stay within: "
          f"{sorted(planned)} + tests/ + docs/")
 
 
@@ -261,14 +227,15 @@ _MUTATION_TOKENS = ("rm ", "rm\t", "mv ", "cp ", "sed -i", "chmod",
 # The wf recovery authorities, matched like the git-push / git-commit rules
 # below. \bwf\b also matches an invoked path ('.workflow/bin/wf accept'), while
 # leaving every other wf subcommand ('wf status', 'wf expected') untouched.
-_RECOVERY_CMD_RE = re.compile(r"\bwf\s+(accept|clear-invocation)\b")
+_RECOVERY_CMD_RE = re.compile(r"\bwf\s+(accept|clear-invocation|approve)\b")
 
 _PROTECTED_SUBSTRINGS = ("state.json", "decision_log.jsonl", "artifacts_index.json",
                          ".workflow/bin", ".workflow/schemas", ".workflow/policies",
                          ".workflow/ACTIVE", ".workflow/config.json",
                          ".workflow/index.json", ".workflow/.hooks_heartbeat",
                          ".claude/hooks", ".claude/agents",
-                         ".claude/settings", ".claude/commands")
+                         ".claude/settings", ".claude/commands",
+                         "gmdw/")
 
 
 def gate_bash(root: Path, wid: str | None, ti: dict):
@@ -277,22 +244,19 @@ def gate_bash(root: Path, wid: str | None, ti: dict):
         allow()
 
     # 'wf accept' / 'wf clear-invocation' are human recovery commands for a
-    # session whose hooks are NOT firing. This gate only executes when the hooks
-    # ARE firing, so its own execution proves the recovery case does not apply:
-    # here the commands can only be an attempt to self-accept an artifact or to
-    # release the single-flight lock, bypassing invocation gating entirely.
-    # Denying loses no legitimate function — in a genuinely hooks-dark session
-    # this gate never runs, and an operator reaches the commands through the '!'
-    # shell escape or a plain terminal, neither of which is gated.
+    # session whose hooks are NOT firing, and 'wf approve' records a HUMAN
+    # decision. This gate only executes when the hooks ARE firing, inside an
+    # agent session, so none of the three can be legitimate here: an agent
+    # running them would be self-accepting its own artifact, releasing the
+    # single-flight lock on itself, or signing its own approval gate. Denying
+    # loses no legitimate function — a human reaches these commands from an
+    # ordinary terminal, and the orchestrator calls them in-process.
     if _RECOVERY_CMD_RE.search(cmd):
-        deny("'wf accept' / 'wf clear-invocation' are human recovery commands "
-             "for sessions where the governance hooks are NOT firing. This gate "
-             "is running, which proves they ARE firing, so these commands are "
-             "never legitimate here: artifacts are accepted only by the "
-             "SubagentStop validator, and an open invocation is released only by "
-             "the agent that owns it. If a workflow is genuinely stuck, escalate "
-             "(wf transition ESCALATED) or run recovery from an ungoverned "
-             "terminal.")
+        deny("'wf accept', 'wf clear-invocation' and 'wf approve' record human "
+             "decisions or recover a hooks-dark session. This gate is running, "
+             "which proves neither case applies: you are an agent inside a "
+             "governed session and may not sign your own gate. If you are stuck, "
+             "write your artifact with status: blocked and stop.")
 
     if any(s in cmd for s in _PROTECTED_SUBSTRINGS) and \
             any(t in cmd for t in _MUTATION_TOKENS):
@@ -300,6 +264,7 @@ def gate_bash(root: Path, wid: str | None, ti: dict):
              "operation; state/policy/hooks are mutated only via the wf CLI")
 
     _, st = S.load_state(root, wid)
+    _check_role(st)
     s = st["state"]
 
     if re.search(r"\bgit\s+push\b|\bgh\s+pr\s+(merge|create)\b", cmd):
@@ -308,7 +273,9 @@ def gate_bash(root: Path, wid: str | None, ti: dict):
                          for a in st["approvals"])
         if s != "APPROVED" or not has_deploy:
             deny("push/PR actions require state APPROVED and a recorded "
-                 "deployment approval (wf approve deployment)")
+                 "deployment approval (wf approve deployment). APPROVED itself "
+                 "now requires a human sign-off on the review — an LLM verdict "
+                 "cannot reach this point on its own.")
 
     if re.search(r"\bgit\s+commit\b", cmd) and s not in ("IMPLEMENTING", "APPROVED"):
         deny(f"git commit is only permitted in IMPLEMENTING or APPROVED (state: {s})")
@@ -322,6 +289,23 @@ def gate_bash(root: Path, wid: str | None, ti: dict):
 
 # --------------------------------------------------------------------------- #
 
+def _attest_liveness(root: Path, wid: str) -> None:
+    """Leave one hook-sourced event per workflow leg.
+
+    This is what proves the enforcement plane fired *for this workflow, since it
+    last moved* — the signal the orchestrator checks after every agent
+    invocation and `wf transition` checks before every move. Once per leg keeps
+    it free: the check reads backwards to the last transition, so a second event
+    would tell nobody anything new.
+    """
+    try:
+        if not ledger.hook_event_since_last_transition(root, wid):
+            ledger.log(root, wid, "hook_liveness", hook="PreToolUse",
+                       pid=os.getpid(), role=_role())
+    except OSError:
+        pass
+
+
 def main():
     data = json.load(sys.stdin)
     cwd = data.get("cwd") or os.getcwd()
@@ -333,6 +317,9 @@ def main():
     wid = S.active_id(root)
     tool = data.get("tool_name", "")
     ti = data.get("tool_input") or {}
+    _CTX.update({"root": root, "wid": wid, "tool": tool})
+    if wid:
+        _attest_liveness(root, wid)
 
     if tool in ("Agent", "Task"):
         gate_agent(root, wid, ti)

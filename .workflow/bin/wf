@@ -1,22 +1,27 @@
 #!/usr/bin/env python3
-"""wf — GMDW workflow CLI. The only legal mutator of state.json.
+"""wf — GMDW workflow CLI. The human's side of the workflow.
+
+Since v0.3.0 the workflow is driven by the deterministic orchestrator
+(`python3 -m gmdw.orchestrator run <request>`), not by this CLI and not by a
+model. What remains here is what a *person* needs: inspecting a run, recording a
+gate decision, and recovering a run whose session lost its governance hooks.
 
 Commands:
-  init        create a workflow (state=RECEIVED, sets ACTIVE, pins the policy)
+  init        create a workflow without driving it (the orchestrator's `run`
+              does this for you; use this for CI or a hand-driven run)
   status      show the active workflow's state, counters, budget
-  expected    show what artifact/agent the current state is waiting for
-  doctor      read-only preflight: are the governance hooks live this session?
+  expected    show what artifacts/agent the current state is waiting for
+  doctor      read-only preflight: is the enforcement plane wired up and live?
   transition  request a state transition (table + guard validated)
-  approve     record a human gate decision as an approval artifact
+  approve     record a human gate decision as a frozen approval artifact
   accept      human recovery: accept a stranded, validly-produced artifact
   clear-invocation  human recovery: release an orphaned open_invocation
-  validate    validate an artifact file against its schema
+  validate    validate an artifact file against its Markdown contract
   close       finalize a terminal workflow (tamper check, index, clear ACTIVE)
 
 The two recovery commands exist ONLY for a session whose governance hooks are
-not firing (nothing else can accept an artifact or release the single-flight
-lock there). While the hooks ARE live the PreToolUse gate denies them, so they
-cannot be used to bypass invocation gating from inside a governed session.
+not firing. While the hooks ARE live the PreToolUse gate denies them — along
+with `approve`, which an agent must never run against its own work.
 
 Exit codes: 0 ok, 1 governance rejection / validation failure, 2 usage error.
 """
@@ -30,10 +35,10 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 _FALLBACK_ROOT = _HERE.parent.parent  # repo root when invoked in place
-sys.path.insert(0, str(_FALLBACK_ROOT / ".claude" / "hooks"))
+sys.path.insert(0, str(_FALLBACK_ROOT))
 
 from gmdw import __version__ as GMDW_VERSION  # noqa: E402
-from gmdw import accept, heartbeat, ledger, policy, schemas  # noqa: E402
+from gmdw import accept, heartbeat, ledger, parsers  # noqa: E402
 from gmdw import state as S               # noqa: E402
 from gmdw.state import GmdwError          # noqa: E402
 
@@ -45,6 +50,10 @@ LIVENESS_EXEMPT_STATES = ("ESCALATED", "FAILED", "REJECTED")
 # a bypass that treats GMDW_ALLOW_UNGOVERNED=0 as "on" would silently disable
 # governance on a stray assignment, which is the wrong way for this to fail.
 _AFFIRMATIVE = {"1", "true", "yes", "on"}
+
+# Gates a human can record here, and what each one signs.
+GATES = ["plan", "final", "architecture", "deployment", "escalation",
+         "route_downgrade"]
 
 
 def _affirmative(value: str | None) -> bool:
@@ -78,42 +87,46 @@ def cmd_init(a):
         _die("request is empty", 2)
     title = a.title or text.strip().splitlines()[0][:120]
 
-    # Governance-liveness preflight (ADR-001 Phase 1). GMDW's guarantees are
-    # enforced by hooks that exist only when Claude Code loaded THIS project's
-    # settings. If they are not firing in this session, creating a workflow
-    # would advance state with no enforcement (ungoverned writes/invocations on
-    # the trivial route, or a deadlock at the first hook-owned acceptance).
-    # Refuse fast with an actionable message rather than fail later.
-    live, why = heartbeat.status(root)
-    # GMDW_ALLOW_UNGOVERNED is the canonical name (honored at init and at
-    # transition) and is affirmative-only. GMDW_ALLOW_UNGOVERNED_INIT is the
-    # Phase-1 name, kept working here for backward compatibility with its
-    # original loose truthiness.
+    # Governance-liveness preflight. GMDW's guarantees are enforced by hooks that
+    # exist only when Claude Code loaded THIS project's settings. Two checks,
+    # either sufficient: the hooks are wired up (which is what the orchestrator
+    # verifies, since it starts outside any session), or one has fired recently
+    # in this session (the in-session self-attestation).
+    installed, why_installed = heartbeat.enforcement_installed(root)
+    live, why_live = heartbeat.status(root)
+    governed = installed or live
+    why = why_installed if not installed else why_live
     bypass = (os.environ.get("GMDW_ALLOW_UNGOVERNED_INIT") or
               _affirmative(os.environ.get("GMDW_ALLOW_UNGOVERNED")))
-    if not live and not bypass:
-        _die("governance hooks are not active in this session — refusing to "
-             "start a workflow.\n"
+    if not governed and not bypass:
+        _die("the GMDW enforcement plane is not available — refusing to start a "
+             "workflow.\n"
              f"  reason: {why}\n"
-             "  Enforcement (invocation gating, write-scoping, budgets, artifact\n"
-             "  acceptance) is provided by hooks registered in this project's\n"
-             "  .claude/settings.json. Launch Claude Code with gmdw-claude-code as\n"
-             "  the project root and retry.\n"
+             "  Enforcement (write-scoping, protected paths, artifact acceptance,\n"
+             "  the push gate) is provided by hooks registered in this project's\n"
+             "  .claude/settings.json and running inside each agent session.\n"
+             "  Launch from gmdw-claude-code as the project root and retry.\n"
              "  For legitimate non-Claude use (CI, manual ops) set\n"
              "  GMDW_ALLOW_UNGOVERNED=1 to override (recorded in the ledger).")
 
     try:
-        wf_id = S.create_workflow(root, text, title, a.by, a.profile)
+        wf_id = S.create_workflow(root, text, title, a.by, a.profile,
+                                  auto_approve=a.auto_approve)
     except GmdwError as e:
         _die(str(e))
 
-    if not live:  # bypass was set: record the ungoverned start in the audit trail
-        ledger.log(root, wf_id, "governance_liveness_bypassed", reason=why, by=a.by)
-        print(f"wf: warning: {why}; proceeding under GMDW_ALLOW_UNGOVERNED_INIT "
+    if not governed:  # bypass was set: record the ungoverned start in the trail
+        ledger.log(root, wf_id, "governance_liveness_bypassed", reason=why,
+                   by=a.by, phase="init")
+        print(f"wf: warning: {why}; proceeding under GMDW_ALLOW_UNGOVERNED "
               f"(recorded in the ledger)", file=sys.stderr)
+    if a.auto_approve:
+        ledger.log(root, wf_id, "auto_approve_enabled", by=a.by,
+                   gates=["plan", "final"])
 
     print(json.dumps({"workflow_id": wf_id, "state": "RECEIVED",
-                      "run_dir": f".workflow/runs/{wf_id}"}))
+                      "run_dir": f".workflow/runs/{wf_id}",
+                      "next": "python3 -m gmdw.orchestrator resume"}))
 
 
 def cmd_status(a):
@@ -132,12 +145,14 @@ def cmd_status(a):
         "limits": st["limits"],
         "budget": st["budget"],
         "current": st["current"],
-        "plan_approved": st["plan_approved"],
+        "human_approved": st.get("human_approved"),
+        "auto_approve": st.get("auto_approve"),
         "approvals": [{k: v for k, v in ap.items() if k != "notes"}
                       for ap in st["approvals"]],
         "escalations": st["escalations"],
         "open_invocation": st["open_invocation"],
         "policy_profile": st["policy"]["profile_name"],
+        "awaiting_gate": S.GATE_FOR_STATE.get(st["state"]),
     }
     print(json.dumps(out, indent=None if a.json else 2))
 
@@ -150,54 +165,63 @@ def cmd_expected(a):
         _die(str(e))
     exp = S.expected(root, st)
     if exp is None:
-        print(json.dumps({"state": st["state"], "expected": None,
-                          "note": "no artifact is produced in this state"}))
+        gate = S.GATE_FOR_STATE.get(st["state"])
+        print(json.dumps({
+            "state": st["state"], "expected": None,
+            "note": (f"no artifact is produced in this state; it is waiting on "
+                     f"the '{gate}' human gate" if gate else
+                     "no artifact is produced in this state")}))
     else:
-        print(json.dumps(exp))
+        print(json.dumps(exp, indent=2))
 
 
 def cmd_doctor(a):
-    """Read-only preflight: is the GMDW enforcement plane actually live in THIS
-    session? Creates and mutates NOTHING (no state.json, ledger, ACTIVE, or run
-    file), so it is safe to run anytime, including before `init`.
+    """Read-only preflight: is the GMDW enforcement plane wired up, and is it
+    live in THIS session? Creates and mutates NOTHING, so it is safe to run
+    anytime, including before `init`.
 
-    It can report liveness despite writing nothing because of self-attestation:
-    run via Bash while the hooks are live, the PreToolUse gate fires on that very
-    Bash invocation and refreshes the heartbeat immediately before this reads it —
-    the same trick `wf init` relies on. A hooks-dark session gets no such refresh,
-    so the heartbeat is stale or absent and the plane reports as down.
+    Two independent readings. *Installed* is static: the three hooks are
+    registered in .claude/settings.json and present on disk — this is what the
+    deterministic orchestrator checks, since it starts before any session exists.
+    *Live* is dynamic self-attestation: run via Bash inside a governed session,
+    the PreToolUse gate fires on that very Bash call and refreshes the heartbeat
+    immediately before this reads it.
 
-    Exit 0 when the hooks are live, 1 when they are not, so it is usable as a
-    scriptable preflight (e.g. `wf doctor && wf init --request ...`).
+    Exit 0 when the plane is usable (installed, or live), 1 when it is not.
     """
     root = _root()
-    live, why = heartbeat.status(root)
+    installed, why_installed = heartbeat.enforcement_installed(root)
+    live, why_live = heartbeat.status(root)
     active = S.active_id(root)
+    usable = installed or live
     if a.json:
-        print(json.dumps({"hooks_live": live, "reason": why,
+        print(json.dumps({"hooks_installed": installed,
+                          "hooks_live": live, "usable": usable,
+                          "reason": why_installed if not installed else why_live,
                           "active_workflow": active}))
     else:
-        print("✅ governance hooks are LIVE" if live
-              else "❌ governance hooks are NOT firing in this session")
-        print(f"   {why}")
+        print("✅ enforcement hooks are REGISTERED" if installed
+              else "❌ enforcement hooks are NOT registered")
+        print(f"   {why_installed}")
+        print("✅ enforcement hooks are LIVE in this session" if live
+              else "⚠  no fresh hook heartbeat in this session")
+        print(f"   {why_live}")
         print(f"   active workflow: {active or 'none'}")
-        if not live:
+        if not usable:
             print("   → you are likely not rooted in the gmdw-claude-code project. "
                   "Launch Claude Code with this repo as the project root "
                   "(see docs/GETTING_STARTED.md), then retry.")
-    sys.exit(0 if live else 1)
+    sys.exit(0 if usable else 1)
 
 
 def _liveness_preflight(root, a):
-    """Refuse a mid-run transition when the enforcement plane is dark
-    (ADR-001 Phase 2).
+    """Refuse a mid-run transition when the enforcement plane is dark.
 
-    `wf init` proves the hooks were live at the START of a workflow, but the
-    session can lose them afterwards (a resumed run, a session rooted elsewhere,
-    a settings change) — and from then on nothing gates invocations, scopes
-    writes, or accepts artifacts, while `wf` happily keeps advancing the state
-    machine. Re-check at each transition, the one point where the workflow
-    actually moves.
+    `init` proves the plane was available when a workflow STARTED, but the
+    session can lose it afterwards (a resumed run, a session rooted elsewhere, a
+    settings change) — and from then on nothing scopes writes or gates pushes,
+    while `wf` happily keeps advancing the state machine. Re-check at each
+    transition, the one point where the workflow actually moves.
 
     Two independent signals, either sufficient: a hook-sourced ledger event since
     the last transition (proof the hooks fired during THIS leg), or a fresh
@@ -231,10 +255,10 @@ def _liveness_preflight(root, a):
          "the workflow.\n"
          f"  reason: {why}\n"
          "  This workflow started under enforcement, but this session is not\n"
-         "  providing it: invocation gating, write-scoping, budgets and artifact\n"
-         "  acceptance are all absent, so advancing would record governed\n"
-         "  progress that nothing governed. Relaunch Claude Code with\n"
-         "  gmdw-claude-code as the project root and retry.\n"
+         "  providing it: write-scoping, the push gate and artifact acceptance\n"
+         "  are all absent, so advancing would record governed progress that\n"
+         "  nothing governed. Relaunch Claude Code with gmdw-claude-code as the\n"
+         "  project root and retry.\n"
          "  ESCALATED / FAILED / REJECTED remain reachable without hooks.\n"
          "  For legitimate non-Claude use (CI, manual ops) set\n"
          "  GMDW_ALLOW_UNGOVERNED=1 or pass --allow-ungoverned (recorded in\n"
@@ -261,14 +285,21 @@ def cmd_transition(a):
 
 
 def cmd_approve(a):
+    """Record a human gate decision.
+
+    This is the authority the v0.3.0 rework moved out of the model's hands. The
+    `final` gate in particular is what `FINAL_APPROVAL -> APPROVED` requires:
+    the Reviewer's verdict is advisory, and only the frozen artifact this writes
+    — carrying `human_approved: true` and naming the exact review it signs — will
+    open that edge.
+    """
     root = _root()
     try:
         wf_id, st = S.load_state(root, a.workflow)
     except GmdwError as e:
         _die(str(e))
-    now = S.utcnow()
-    gate, decision, resolution = a.gate, a.decision, a.resolution
 
+    gate, decision, resolution = a.gate, a.decision, a.resolution
     if gate == "escalation":
         if not resolution:
             _die("escalation approval requires --resolution "
@@ -276,69 +307,39 @@ def cmd_approve(a):
         if not st["escalations"] or st["escalations"][-1]["resolution"] != "pending":
             _die("no pending escalation to resolve")
         decision = "force_approved" if resolution == "force_approve" else "approved"
-        rel = f"artifacts/approvals/escalation_{len(st['escalations'])}.json"
-    else:
-        if not decision:
-            _die("--decision is required for non-escalation gates", 2)
-        rel = f"artifacts/approvals/{gate}_approval.json"
+    elif not decision:
+        _die("--decision is required for non-escalation gates", 2)
 
-    version = 1 + sum(1 for ap in st["approvals"] if ap["gate"] == gate)
-    artifact = {
-        "artifact_type": "approval",
-        "workflow_id": wf_id,
-        "version": version,
-        "produced_by": "human",
-        "input_artifact_refs": [a.subject] if a.subject else [],
-        "created_at": now,
-        "status": "complete",
-        "gate": gate,
-        "decision": decision,
-        "by": a.by,
-        "at": now,
-        "subject_ref": a.subject or "",
-        "notes": a.notes or "",
-    }
-    if resolution:
-        artifact["resolution"] = resolution
-    if a.overridden_findings:
-        artifact["overridden_findings"] = a.overridden_findings
+    # Default the subject to whatever this gate actually signs, so the common
+    # case cannot accidentally record an approval that names nothing (and would
+    # then fail the version-scoped check at the guard).
+    subject = a.subject or S.approval_subject(st, gate) or ""
 
-    errs = schemas.validate_artifact(root, artifact, "approval")
-    if errs:
-        _die("approval artifact invalid: " + "; ".join(errs))
-
-    full = S.workflow_dir(root, wf_id) / rel
-    if full.exists():
-        _die(f"approval artifact already exists: {rel} (approvals are immutable)")
-    S.atomic_write_json(full, artifact)
-    S.freeze_artifact(root, wf_id, rel, st["state"])
-
-    st["approvals"].append({"gate": gate, "decision": decision, "by": a.by,
-                            "at": now, "artifact_ref": rel,
-                            "notes": a.notes or ""})
-    if gate == "plan" and decision in ("approved", "force_approved"):
-        st["plan_approved"] = True
-    if gate == "escalation":
-        st["escalations"][-1]["resolution"] = resolution
-        st["escalations"][-1]["resolved_at"] = now
+    res = accept.record_approval(root, st, gate=gate, decision=decision,
+                                 by=a.by, subject=subject, notes=a.notes or "",
+                                 resolution=resolution,
+                                 overridden_findings=a.overridden_findings)
+    if not res.accepted:
+        _die(res.reason)
     S.save_state(root, wf_id, st)
-    ledger.log(root, wf_id, "human_approval", gate=gate, decision=decision,
-               by=a.by, resolution=resolution, artifact=rel)
-    print(json.dumps({"gate": gate, "decision": decision, "artifact": rel}))
+    print(json.dumps({"gate": gate, "decision": decision,
+                      "subject": subject, "artifact": res.extra["artifact"]}))
 
 
 def cmd_accept(a):
-    """Human recovery for a STRANDED artifact (ADR-001 Phase 2).
+    """Human recovery for a STRANDED artifact.
 
-    An artifact that a subagent produced validly, but that no SubagentStop hook
-    ever accepted (because the hooks were not firing), leaves the workflow unable
-    to advance: the guard wants a pointer only acceptance sets, and the artifact
-    is already on disk so re-running the agent would collide with it.
+    An artifact an agent produced validly, but that nothing ever accepted
+    (because the orchestrator died, or the session's hooks were not firing),
+    leaves the workflow unable to advance: the guard wants a pointer only
+    acceptance sets, and the artifact is already on disk so re-running the agent
+    would collide with it.
 
-    This accepts ONLY the exact artifact the current state is waiting for, via
-    the same core the hook uses — identical validation, no privileged shortcut.
-    It is denied by the PreToolUse gate while hooks are live (nothing legitimate
-    needs it there), so it is reachable only from a genuinely hooks-dark session.
+    This accepts ONLY the artifacts the current state is waiting for, via the
+    same core the orchestrator uses — identical validation, no privileged
+    shortcut. It is denied by the PreToolUse gate while hooks are live (nothing
+    legitimate needs it there), so it is reachable only from a genuinely
+    hooks-dark session or an ordinary terminal.
     """
     root = _root()
     try:
@@ -348,48 +349,45 @@ def cmd_accept(a):
 
     exp = S.expected(root, st)
     if exp is None:
+        gate = S.GATE_FOR_STATE.get(st["state"])
         _die(f"state {st['state']} produces no artifact; there is nothing to "
-             f"accept (recovery here is 'wf approve' or a transition)")
-    atype, version = exp["artifact_type"], exp["version"]
-    run_rel = S.artifact_relpath(atype, version)
-    full = S.workflow_dir(root, wf_id) / run_rel
+             f"accept" + (f" (it is waiting on the '{gate}' gate — use "
+                          f"`wf approve {gate}`)" if gate else ""))
 
+    primary = exp["primary"]
+    full = S.workflow_dir(root, wf_id) / primary["run_rel"]
     if not full.exists():
-        _die(f"nothing to accept: {run_rel} does not exist. State {st['state']} "
-             f"is waiting for {atype} v{version}; only that exact version is "
-             f"acceptable.")
-    if ledger.is_frozen(root, wf_id, run_rel):
-        _die(f"{run_rel} is already accepted and frozen; accepted artifacts are "
-             f"immutable (produce the next version instead)")
+        _die(f"nothing to accept: {primary['run_rel']} does not exist. State "
+             f"{st['state']} is waiting for {primary['artifact_type']} "
+             f"v{primary['version']}; only that exact version is acceptable.")
+    if ledger.is_frozen(root, wf_id, primary["run_rel"]):
+        _die(f"{primary['run_rel']} is already accepted and frozen; accepted "
+             f"artifacts are immutable (produce the next version instead)")
 
-    res = accept.accept_artifact(root, st, atype, version,
-                                 actor="human_recovery", by=a.by)
+    res = accept.accept_stage(root, st, exp, actor="human_recovery", by=a.by)
     if not res.accepted:
-        _die(f"refusing to accept {run_rel}: {res.reason}")
+        _die(f"refusing to accept {primary['run_rel']}: {res.reason}")
 
-    # The core advanced the pointer, froze the artifact and logged acceptance.
-    # Close out the invocation plane exactly as the hook would.
     st["counters"]["consecutive_failures"] = 0
     st["open_invocation"] = None
     S.save_state(root, wf_id, st)
-    print(json.dumps({"accepted": atype, "version": version, "path": run_rel,
-                      "by": a.by, "state": st["state"]}))
+    print(json.dumps({"accepted": res.extra.get("accepted", []), "by": a.by,
+                      "state": st["state"]}, indent=2))
 
 
 def cmd_clear_invocation(a):
-    """Human recovery for an ORPHANED invocation (ADR-001 Phase 2).
+    """Human recovery for an ORPHANED invocation.
 
-    If an invocation is interrupted between the gate opening it and a subagent
-    actually running, open_invocation dangles with no process behind it. That
-    deadlocks the workflow completely: guard() refuses EVERY transition while an
-    invocation is open — including ESCALATED, the documented escape — and
-    single-flight refuses every new invocation. The lock outlives the thing it
-    was protecting.
+    If an invocation is interrupted between the orchestrator opening it and the
+    agent actually running, open_invocation dangles with no process behind it.
+    That deadlocks the workflow completely: guard() refuses EVERY transition
+    while an invocation is open — including ESCALATED, the documented escape —
+    and single-flight refuses every new invocation. The lock outlives the thing
+    it was protecting.
 
     This releases that lock and nothing else: no counters, no pointers, no
     acceptance. consecutive_failures deliberately survives, so clearing cannot be
-    used to dodge the two-failure escalation limit. Like 'wf accept' it is denied
-    by the gate while hooks are live (a live session's in-flight lock is real).
+    used to dodge the two-failure escalation limit.
     """
     root = _root()
     try:
@@ -411,15 +409,34 @@ def cmd_clear_invocation(a):
 
 
 def cmd_validate(a):
+    """Validate an artifact against its contract.
+
+    Markdown artifacts go through gmdw.parsers; the approval record — the one
+    artifact still authored as JSON, because a machine writes it — goes through
+    the JSON-Schema subset validator.
+    """
     root = _root()
     p = Path(a.path)
     if not p.exists():
         _die(f"file not found: {a.path}", 2)
-    try:
-        artifact = json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        _die(f"not valid JSON: {e}")
-    errs = schemas.validate_artifact(root, artifact, a.type)
+
+    if a.type == "approval":
+        from gmdw import schemas
+        try:
+            artifact = json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            _die(f"not valid JSON: {e}")
+        errs = schemas.validate_artifact(root, artifact, "approval")
+    else:
+        wf_id = a.workflow or S.active_id(root) or ""
+        version = a.artifact_version
+        if version is None:
+            import re as _re
+            m = _re.search(r"_v(\d+)", p.name) or _re.search(r"_v(\d+)/", str(p))
+            version = int(m.group(1)) if m else 1
+        errs = parsers.validate_artifact(p.read_text(encoding="utf-8"), a.type,
+                                         workflow_id=wf_id, version=version)
+
     if errs:
         print(json.dumps({"valid": False, "errors": errs}, indent=2))
         sys.exit(1)
@@ -432,32 +449,10 @@ def cmd_close(a):
         wf_id, st = S.load_state(root, a.workflow)
     except GmdwError as e:
         _die(str(e))
-    if st["state"] not in S.TERMINAL:
-        _die(f"cannot close: state {st['state']} is not terminal "
-             f"({sorted(S.TERMINAL)})")
-    mismatches = ledger.verify(root, wf_id)
-    if mismatches:
-        ledger.log(root, wf_id, "integrity_violation", detail=mismatches,
-                   phase="close")
-        _die(f"tamper check failed; refusing to close: {mismatches}")
-
-    idx_p = Path(root) / ".workflow" / "index.json"
-    idx = json.loads(idx_p.read_text(encoding="utf-8")) if idx_p.exists() else {}
-    idx[wf_id] = {
-        "title": st["workflow"]["title"],
-        "state": st["state"],
-        "created_at": st["workflow"]["created_at"],
-        "closed_at": S.utcnow(),
-        "cost_usd_estimate": st["budget"]["cost_usd_estimate"],
-        "tokens": st["budget"]["tokens_consumed_estimate"],
-    }
-    S.atomic_write_json(idx_p, idx)
-
-    active = Path(root) / ".workflow" / "ACTIVE"
-    if active.exists() and active.read_text(encoding="utf-8").strip() == wf_id:
-        active.unlink()
-    ledger.log(root, wf_id, "workflow_closed", final_state=st["state"])
-    print(json.dumps({"closed": wf_id, "final_state": st["state"]}))
+    try:
+        print(json.dumps(S.close_workflow(root, wf_id, st)))
+    except GmdwError as e:
+        _die(str(e))
 
 
 # ----------------------------------------------------------------------- #
@@ -468,11 +463,14 @@ def main():
     ap.add_argument("--version", action="version", version=f"GMDW wf {GMDW_VERSION}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("init", help="create a workflow")
+    p = sub.add_parser("init", help="create a workflow without driving it")
     p.add_argument("--request", required=True, help="path to request file, or - for stdin")
     p.add_argument("--title", default=None)
     p.add_argument("--by", default=os.environ.get("USER", "unknown"))
     p.add_argument("--profile", default=None, help="policy profile override")
+    p.add_argument("--auto-approve", action="store_true", dest="auto_approve",
+                   help="waive the plan and final human gates (trivial route + "
+                        "permitting profile only; never the deployment gate)")
     p.set_defaults(fn=cmd_init)
 
     p = sub.add_parser("status", help="show workflow status")
@@ -484,8 +482,8 @@ def main():
     p.add_argument("--workflow", default=None)
     p.set_defaults(fn=cmd_expected)
 
-    p = sub.add_parser("doctor", help="read-only: are the governance hooks live "
-                                      "in this session? (no side effects)")
+    p = sub.add_parser("doctor", help="read-only: is the enforcement plane wired "
+                                      "up and live? (no side effects)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.set_defaults(fn=cmd_doctor)
 
@@ -497,7 +495,8 @@ def main():
                    choices=["orchestrator", "hook", "human"])
     p.add_argument("--reason", default=None,
                    choices=[None, "revision_limit", "reject_verdict", "agent_blocked",
-                            "budget", "integrity_violation", "stale_workspace", "other"])
+                            "budget", "limit", "integrity_violation",
+                            "stale_workspace", "other"])
     p.add_argument("--detail", default=None)
     p.add_argument("--allow-ungoverned", action="store_true",
                    dest="allow_ungoverned",
@@ -506,13 +505,14 @@ def main():
     p.set_defaults(fn=cmd_transition)
 
     p = sub.add_parser("approve", help="record a human gate decision")
-    p.add_argument("gate", choices=["plan", "architecture", "deployment",
-                                    "escalation", "route_downgrade"])
+    p.add_argument("gate", choices=GATES)
     p.add_argument("--decision", default=None,
                    choices=["approved", "changes_requested", "rejected",
                             "force_approved"])
     p.add_argument("--by", required=True)
-    p.add_argument("--subject", default=None, help="artifact being approved")
+    p.add_argument("--subject", default=None,
+                   help="artifact being approved (defaults to the current "
+                        "plan/review for the plan/final gates)")
     p.add_argument("--notes", default=None)
     p.add_argument("--resolution", default=None,
                    choices=["redirect", "override", "force_approve", "abandon"])
@@ -521,23 +521,29 @@ def main():
     p.add_argument("--workflow", default=None)
     p.set_defaults(fn=cmd_approve)
 
-    p = sub.add_parser("accept", help="human recovery: accept a stranded, "
-                                      "validly-produced artifact (hooks-dark "
-                                      "sessions only)")
+    p = sub.add_parser("accept", help="human recovery: accept the stranded, "
+                                      "validly-produced artifacts of the "
+                                      "current stage")
     p.add_argument("--by", required=True, help="human accountable for the recovery")
     p.add_argument("--workflow", default=None)
     p.set_defaults(fn=cmd_accept)
 
     p = sub.add_parser("clear-invocation",
-                       help="human recovery: release an orphaned open_invocation "
-                            "(hooks-dark sessions only)")
+                       help="human recovery: release an orphaned open_invocation")
     p.add_argument("--by", required=True, help="human accountable for the recovery")
     p.add_argument("--workflow", default=None)
     p.set_defaults(fn=cmd_clear_invocation)
 
-    p = sub.add_parser("validate", help="validate an artifact against its schema")
+    p = sub.add_parser("validate", help="validate an artifact against its contract")
     p.add_argument("path")
-    p.add_argument("--type", required=True, choices=sorted(schemas.SCHEMA_FOR_TYPE))
+    p.add_argument("--type", required=True,
+                   choices=sorted(set(parsers.ARTIFACT_SPEC) | {"approval"}))
+    p.add_argument("--workflow", default=None,
+                   help="workflow id the envelope must name (default: ACTIVE)")
+    p.add_argument("--artifact-version", type=int, default=None,
+                   dest="artifact_version",
+                   help="version the envelope must declare (default: from the "
+                        "filename)")
     p.set_defaults(fn=cmd_validate)
 
     p = sub.add_parser("close", help="finalize a terminal workflow")

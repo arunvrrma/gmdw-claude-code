@@ -1,5 +1,11 @@
 # GMDW — Live Validation Plan
 
+> **Historical (v0.2.x).** This document describes the six-agent,
+> LLM-orchestrated architecture that v0.3.0 replaced, and the validation
+> done against it. It is kept for provenance. For what GMDW is now, see
+> [`MIGRATION.md`](../../MIGRATION.md), [`docs/KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md)
+> and [`docs/SMOKE_TESTS.md`](../SMOKE_TESTS.md).
+
 Validates the framework against **real Claude Code execution**. The offline suite
 proved the governance logic; this plan proves the logic is actually *wired into* the
 runtime — that hooks fire, metadata arrives in the expected shape, and the state

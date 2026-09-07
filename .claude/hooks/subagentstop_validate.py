@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
-"""GMDW SubagentStop validator — artifact acceptance gate.
+"""GMDW SubagentStop validator — artifact acceptance gate for subagent sessions.
 
 When a subagent finishes, this hook decides whether its artifact is ACCEPTED
-(advancing the workflow) or REJECTED (a failed invocation the Orchestrator may
-retry once). The decision itself — existence, schema, semantic cross-checks,
-counter bumps, pointer update, freeze — lives in gmdw/accept.py, which `wf
-accept` shares, so the hook and the human recovery path validate identically.
+(advancing the workflow) or REJECTED. The decision itself — existence, envelope
+and section validation, semantic cross-checks, counter bumps, pointer update,
+freeze — lives in gmdw/accept.py, which the deterministic orchestrator and
+`wf accept` share, so all three paths validate identically.
 
-This hook is the session-plane adapter around that core: it resolves which
-artifact the finished invocation owed, translates the core's Result into the
-"block" reason channel the model reads, and owns the invocation lifecycle
+Since v0.3.0 the orchestrator starts each agent as its own Claude Code session
+rather than as a subagent, so on the normal path *the orchestrator* accepts the
+stage and this hook simply sees no tracked invocation and returns. It is kept —
+and kept exact — because a subagent can still appear inside an agent session
+(the PreToolUse gate denies it, but a configuration that permits it must not
+thereby escape acceptance), and because it is the acceptance path for anything
+still driven the v0.2 way.
+
+This hook is the session-plane adapter around the acceptance core: it resolves
+which artifact the finished invocation owed, translates the core's Result into
+the "block" reason channel the model reads, and owns the invocation lifecycle
 (open_invocation, consecutive_failures) and the state save.
 
 FAIL-CLOSED: on rejection it bumps consecutive_failures and logs the reason;
@@ -21,8 +29,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from gmdw import accept, heartbeat, ledger  # noqa: E402
 from gmdw import state as S       # noqa: E402
 from gmdw.state import GmdwError  # noqa: E402

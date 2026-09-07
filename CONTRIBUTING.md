@@ -56,17 +56,22 @@ A change may **not**, without an accompanying architecture decision and sign-off
   tightened, never loosened — `policy.validate_profile` enforces this).
 - Make artifact acceptance advance a version pointer without schema + semantic validation.
 - Turn a fail-closed path into fail-open.
+- Add an edge into `APPROVED` or `IMPLEMENTING` that does not pass through a human
+  gate, or make an LLM verdict sufficient to open one. The Reviewer is advisory by
+  construction; that is the point of the v0.3.0 rework (see `MIGRATION.md` §4).
+- Move a routing decision out of `gmdw/orchestrator.py` and into a prompt. Routing
+  is a loop over a transition table, and it stays in Python.
 
-Schemas, hooks, and agent definitions are part of the enforcement surface — treat edits
-to them with the same scrutiny as runtime code.
+The `gmdw/` package, the hooks, the schemas and the agent definitions are all part of
+the enforcement surface — treat edits to them with the same scrutiny as runtime code.
 
 ## Testing requirements
 
 Before any PR:
 
 ```bash
-python3 tests/test_governance.py            # must print OK (51 tests)
-for f in .claude/hooks/*.py .claude/hooks/gmdw/*.py .workflow/bin/wf; do \
+python3 -m unittest discover -s tests -t tests   # must print OK (146 tests)
+for f in .claude/hooks/*.py gmdw/*.py .workflow/bin/wf; do \
   python3 -c "import ast;ast.parse(open('$f').read())" || echo "SYNTAX: $f"; done
 for f in .workflow/schemas/*.json .workflow/policies/*.json; do \
   python3 -c "import json;json.load(open('$f'))" || echo "JSON: $f"; done
@@ -76,8 +81,9 @@ for f in .workflow/schemas/*.json .workflow/policies/*.json; do \
   **negative** test (violation denied/blocked) — the suite's pattern.
 - Do not delete or weaken an existing governance test to make a change pass. If a test
   is genuinely wrong, fix it in a separate, clearly-justified commit.
-- New adversarial scenarios go in `tests/test_governance.py` and are documented in
-  `tests/README.md` and `docs/ADVERSARIAL_VALIDATION.md`.
+- New adversarial scenarios go in `tests/test_governance.py`; new routing behavior
+  goes in `tests/test_orchestrator.py`; new artifact-format rules go in
+  `tests/test_parsers.py`. Document them in `tests/README.md`.
 
 ## What not to do in this repo
 

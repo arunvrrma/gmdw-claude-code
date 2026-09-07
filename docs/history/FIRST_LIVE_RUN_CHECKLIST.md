@@ -1,5 +1,11 @@
 # GMDW — First Live Run Checklist
 
+> **Historical (v0.2.x).** This document describes the six-agent,
+> LLM-orchestrated architecture that v0.3.0 replaced, and the validation
+> done against it. It is kept for provenance. For what GMDW is now, see
+> [`MIGRATION.md`](../../MIGRATION.md), [`docs/KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md)
+> and [`docs/SMOKE_TESTS.md`](../SMOKE_TESTS.md).
+
 A step-by-step procedure for executing the first real workflow inside Claude Code.
 Assumes the implementation is complete (23/23 offline). Follow in order; do not skip
 the pre-flight. Keep a run log capturing Q1–Q5 answers and any accepted-mode deviations.

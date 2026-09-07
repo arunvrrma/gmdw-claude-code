@@ -1,5 +1,11 @@
 # GMDW — Adversarial Validation
 
+> **Historical (v0.2.x).** This document describes the six-agent,
+> LLM-orchestrated architecture that v0.3.0 replaced, and the validation
+> done against it. It is kept for provenance. For what GMDW is now, see
+> [`MIGRATION.md`](../../MIGRATION.md), [`docs/KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md)
+> and [`docs/SMOKE_TESTS.md`](../SMOKE_TESTS.md).
+
 Tests that intentionally attempt to violate governance, to be re-confirmed **live**
 (all ten already pass in the offline suite `tests/test_governance.py` — the mapping to
 the automated test is noted per case). During the live run, reproduce each by driving

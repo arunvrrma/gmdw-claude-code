@@ -5,10 +5,10 @@
   "type": "object",
   "required": ["schema_version", "workflow", "policy", "state", "state_entered_at",
                "route", "flags", "counters", "limits", "budget", "current",
-               "plan_approved", "approvals", "escalations", "history",
-               "open_invocation"],
+               "human_approved", "auto_approve", "approvals", "escalations",
+               "history", "open_invocation"],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "workflow": {
       "type": "object",
       "required": ["id", "title", "request_ref", "created_at", "created_by"],
@@ -31,9 +31,8 @@
       }
     },
     "state": {
-      "enum": ["RECEIVED", "CLASSIFYING", "REPOSITORY_ANALYSIS", "PLANNING",
-               "PLAN_REVIEW", "PLAN_SECURITY_REVIEW", "PLAN_APPROVAL",
-               "IMPLEMENTING", "SECURITY_REVIEW", "CODE_REVIEW", "APPROVED",
+      "enum": ["RECEIVED", "ANALYSIS_PLANNING", "PLAN_APPROVAL", "IMPLEMENTING",
+               "REVIEW", "FINAL_APPROVAL", "APPROVED",
                "ESCALATED", "COMPLETED", "FAILED", "REJECTED"]
     },
     "state_entered_at": { "type": "string" },
@@ -51,8 +50,7 @@
     "counters": {
       "type": "object",
       "required": ["plan_revisions", "impl_revisions", "review_cycles",
-                   "plan_reviews", "security_reviews", "code_reviews",
-                   "agent_invocations", "consecutive_failures"],
+                   "reviews", "agent_invocations", "consecutive_failures"],
       "additionalProperties": { "type": "integer", "minimum": 0 }
     },
     "limits": {
@@ -65,7 +63,7 @@
     "budget": {
       "type": "object",
       "required": ["token_budget", "tokens_consumed_estimate", "usage_by_role",
-                   "cost_usd_estimate", "deadline"],
+                   "cost_usd_estimate", "cost_ceiling_usd", "deadline"],
       "properties": {
         "token_budget": { "type": "integer", "minimum": 1 },
         "tokens_consumed_estimate": { "type": "integer", "minimum": 0 },
@@ -74,15 +72,28 @@
           "additionalProperties": { "type": "integer", "minimum": 0 }
         },
         "cost_usd_estimate": { "type": "number", "minimum": 0 },
+        "cost_ceiling_usd": { "type": "number", "minimum": 0 },
         "deadline": { "type": "string" }
       }
     },
     "current": {
       "type": "object",
-      "required": ["classification", "repo_analysis", "plan", "plan_review",
-                   "security_review_plan", "implementation",
-                   "security_review_code", "code_review"],
+      "required": ["classification", "repo_analysis", "plan", "implementation",
+                   "review"],
       "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "human_approved": {
+      "type": "object",
+      "description": "Mirror of the frozen approval artifacts, for readers. The guards read the artifacts, not this.",
+      "required": ["plan", "final"],
+      "properties": {
+        "plan": { "type": "boolean" },
+        "final": { "type": "boolean" }
+      }
+    },
+    "auto_approve": {
+      "type": "boolean",
+      "description": "Was this run launched with --auto-approve? It only takes effect on a trivial route whose profile marks the gate 'off', and never on the deployment gate."
     },
     "plan_approved": { "type": "boolean" },
     "approvals": {
@@ -91,13 +102,15 @@
         "type": "object",
         "required": ["gate", "decision", "by", "at", "artifact_ref"],
         "properties": {
-          "gate": { "enum": ["plan", "architecture", "deployment", "escalation",
-                             "route_downgrade"] },
+          "gate": { "enum": ["plan", "final", "architecture", "deployment",
+                             "escalation", "route_downgrade"] },
           "decision": { "enum": ["approved", "changes_requested", "rejected",
                                  "force_approved"] },
           "by": { "type": "string" },
           "at": { "type": "string" },
           "artifact_ref": { "type": "string" },
+          "human_approved": { "type": "boolean" },
+          "auto_approved": { "type": "boolean" },
           "notes": { "type": "string" }
         }
       }
@@ -111,8 +124,8 @@
           "at": { "type": "string" },
           "from_state": { "type": "string" },
           "reason": { "enum": ["revision_limit", "reject_verdict", "agent_blocked",
-                               "budget", "integrity_violation", "stale_workspace",
-                               "other"] },
+                               "budget", "limit", "integrity_violation",
+                               "stale_workspace", "other"] },
           "detail": { "type": "string" },
           "resolution": { "enum": ["pending", "redirect", "override",
                                    "force_approve", "abandon"] },

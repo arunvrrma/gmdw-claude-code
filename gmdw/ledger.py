@@ -36,11 +36,13 @@ def log(root, wf_id: str, event: str, **fields) -> None:
         f.write(json.dumps(entry, sort_keys=True) + "\n")
 
 
-# Events only a governance HOOK can write. `artifact_accepted` is deliberately
-# absent: the wf CLI writes it too (orchestrator-written artifacts, and human
-# recovery), so its presence proves nothing about the enforcement plane.
-HOOK_SOURCED_EVENTS = ("invocation_requested", "invocation_completed",
-                       "invocation_failed")
+# Events only a governance HOOK can write, and therefore the only proof that the
+# enforcement plane fired. Since v0.3.0 the deterministic orchestrator owns the
+# invocation lifecycle, so the old `invocation_*` events no longer distinguish
+# the two planes and are not listed here. `hook_liveness` is written by the
+# PreToolUse gate once per workflow leg precisely to be this signal;
+# `artifact_written` and `gate_denied` corroborate it.
+HOOK_SOURCED_EVENTS = ("hook_liveness", "artifact_written", "gate_denied")
 
 
 def read_events(root, wf_id: str) -> list:

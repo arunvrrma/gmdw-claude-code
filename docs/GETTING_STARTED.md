@@ -16,11 +16,13 @@ and answer one or two approval prompts.
    ```
    /gmdw Add a --dry-run flag to the export CLI
    ```
-3. Answer the approval prompts when they appear (approve the plan on larger
-   changes, approve the deployment before anything ships). Done.
+3. Answer the three approval prompts: the plan before any code is written, the
+   review and diff before it's called done, and the deployment before anything
+   ships. Done.
 
 Everything in between — sizing the change, reading the repo, planning, writing the
-code and tests, security and code review — happens automatically.
+code and tests, reviewing it for correctness and security — happens automatically.
+The decisions do not.
 
 ---
 
@@ -35,8 +37,8 @@ code and tests, security and code review — happens automatically.
   to start:
 
   ```
-  wf: error: governance hooks are not active in this session — refusing to
-  start a workflow.
+  gmdw: refusing to start:
+    the governance hooks are not fully registered in .claude/settings.json
   ```
 
   If you see that, relaunch Claude Code rooted in this repo and retry.
@@ -58,66 +60,107 @@ its `.claude/` directory). How you set that depends on the surface:
 - **Claude Code on the web:** start the session against this repository so its
   `.claude/` is the checkout root.
 
-If the root is wrong you'll hit the *"governance hooks are not active"* refusal
-above — that's the liveness guard failing safe (no hooks → no enforcement → no
-run), not a bug. Relatedly, GMDW governs changes **in its own repo**; using it to
-change a *different* repo from a gmdw-rooted session is out of scope (see
-[KNOWN_LIMITATIONS](KNOWN_LIMITATIONS.md)).
+If the root is wrong you'll hit the refusal above — that's the liveness guard failing safe (no hooks → no enforcement → no
+run), not a bug.
+
+To govern a *different* repository, install the plane into it rather than pointing
+a gmdw-rooted session at it: copy `.claude/`, `gmdw/` and `.workflow/`
+(`schemas/`, `policies/`, `bin/`, `config.json`) into that repo and run the
+orchestrator from its root. The hooks load from the project you are in, which is
+exactly why they have to live there. Running GMDW from one repo against another is
+still out of scope — that is the fail-open mode `docs/history/` records from v0.2
+(see [KNOWN_LIMITATIONS](KNOWN_LIMITATIONS.md) §F).
 
 ### Verify your setup
 
 One read-only command tells you whether the enforcement plane is actually live in
 this session — it creates no workflow and has no side effects:
 ```bash
-.workflow/bin/wf doctor        # ✅ LIVE (exit 0), or ❌ not firing (exit 1)
+.workflow/bin/wf doctor        # exit 0 if the plane is usable, 1 if not
 ```
+It reports two things separately, because they answer different questions:
+*registered* (all three hooks are wired into `.claude/settings.json` and present on
+disk — what the orchestrator checks before it spends anything) and *live* (a hook
+has actually fired recently in this session).
+
 Run it before your first `/gmdw` if you're unsure the root is right. Optionally,
 confirm the whole toolchain is healthy (standard library only — no `pip install`):
 ```bash
-python3 tests/test_governance.py     # the governance suite must pass
+python3 -m unittest discover -s tests -t tests    # 146 tests, must print OK
 ```
 
 ---
 
 ## What happens after you type `/gmdw`
 
-GMDW first **sizes** your request across six dimensions and picks a *route* — this
-decides how much ceremony you'll see:
+`/gmdw` hands your request to a deterministic Python program — `gmdw/orchestrator.py`
+— that drives the whole run. You can also call it directly, which is the same thing
+without the middleman:
 
-| Route | When | What runs | Your approvals |
-|---|---|---|---|
-| **trivial** | tiny, low-risk changes | straight to implementation + review | just the deployment gate |
-| **medium** | most everyday changes | analysis → plan → implement → review | the plan is shown to you (FYI); deployment gate |
-| **full** | large, architectural, or security/data changes | adds plan review, security review, and a **blocking plan approval** | you approve the plan *and* the deployment |
+```bash
+python3 -m gmdw.orchestrator run request.md --by "$USER"
+```
 
-You don't choose the route — GMDW scores it and explains why. Security- or
-data-model-sensitive changes are forced to **full** automatically.
+It reads the workflow state, looks up what comes next in a fixed table, starts
+**one** agent, checks what that agent produced, advances, and repeats. No model
+decides what happens next — which is why a run does not wander, stall, or talk
+itself into skipping a step.
 
-From there it drives itself through the stages, invoking one specialized agent per
-stage (repo-analyst → planner → plan-reviewer → security-reviewer → implementor →
-code-reviewer), each communicating only through versioned, frozen artifacts.
+Three agents run, in this order, each in its own session and each communicating
+only through versioned, frozen artifacts:
+
+| Stage | Agent | What it does |
+|---|---|---|
+| `ANALYSIS_PLANNING` | **analyst-planner** | reads the codebase, sizes the change, writes the plan |
+| `IMPLEMENTING` | **implementor** | writes the code and the tests, confined to the plan's file list |
+| `REVIEW` | **reviewer** | one pass over the diff for both security and code quality |
+
+GMDW also **sizes** your request across six dimensions and picks a *route* —
+`trivial`, `medium` or `full`. You don't choose it; GMDW scores it and explains
+why, and security- or data-model-sensitive changes are forced to `full`
+automatically. The route controls how strict the governance around the run is —
+how many revisions are allowed, whether the security checklist is mandatory,
+whether the gates can ever be waived.
 
 ---
 
 ## Your touchpoints (the human gates)
 
-You'll only be interrupted at decision points that are genuinely yours:
+There are three, and the first two are **structural**: the workflow has no path
+from planning to implementation, or from review to approval, that does not go
+through you.
 
-- **Deployment approval — always.** Before anything is committed to a shareable
-  branch, pushed, or opened as a PR, GMDW stops and asks you to approve. Nothing
-  ships without this.
-- **Plan approval — on full-route changes** (or under the `strict` profile). Before
-  a single line of code is written, GMDW shows you the plan — objective, scope,
-  risks, files — and asks: approve, request changes, or reject. On medium-route
-  changes the plan is shown as an FYI and it proceeds.
-- **Escalation — if it gets stuck.** If a limit is hit, an agent reports it can't
-  proceed, or a reviewer rejects the work, GMDW hands you a summary and asks how to
-  proceed: **redirect** (re-plan), **override** (proceed with your instruction),
-  **force-approve**, or **abandon**.
-- **Route downgrade — rare.** If analysis reveals the change is smaller than first
-  scored, GMDW asks permission before skipping planning.
+- **Plan approval — before any code is written.** GMDW prints the objective, the
+  exact list of files the Implementor will be allowed to touch, the milestones, the
+  acceptance criteria and the risks, then asks: **approve**, **revise**, or
+  **reject**. Requesting changes sends it back to planning with your note.
+- **Final approval — before anything is called done.** GMDW prints the reviewer's
+  findings **and the actual diff**, then asks the same three-way question.
 
-Each gate is a simple multiple-choice prompt. Answer it and GMDW continues.
+  The reviewer's verdict is **advisory**. It can tell you something is wrong; it
+  cannot decide the work is right. That call is yours, and the machine will not
+  reach `APPROVED` without a signed record of you making it.
+- **Deployment approval — always.** Before anything is pushed or opened as a PR,
+  GMDW stops one more time. Nothing ships without this, on any route, under any
+  profile.
+
+Plus **escalation**, if it gets stuck: a limit is hit, an agent reports it can't
+proceed, or an artifact fails validation twice. GMDW hands you a summary and asks
+how to proceed — **redirect** (re-plan), **override** (proceed with your
+instruction), **force-approve**, or **abandon**.
+
+If you're not at the keyboard, GMDW doesn't hang waiting. It prints the briefing,
+prints the exact command to record your decision, and exits with code `2`:
+
+```bash
+.workflow/bin/wf approve plan --decision approved --by "$USER"
+python3 -m gmdw.orchestrator resume
+```
+
+There is one way to skip the first two gates, and it is deliberately narrow:
+`--auto-approve` waives them on a `trivial`-route change whose policy profile
+allows it. It never waives the deployment gate, and every use of it is written to
+the decision log.
 
 ---
 
@@ -128,25 +171,31 @@ You type:
 /gmdw Add a --dry-run flag to the export CLI so users can preview an export
 ```
 
-1. **It sizes the change.** GMDW scores it *medium* (a couple of files, no security
-   or data-model impact) and tells you so.
-2. **It analyzes and plans** — the repo-analyst maps the export CLI, the planner
-   writes a plan (which files change, the acceptance criteria, the test), and the
-   plan-reviewer checks it. You see a one-paragraph plan summary go by.
-3. **It implements.** The implementor writes the `--dry-run` flag, a test, and
-   updates the help text — confined by the gate to exactly the files the plan named.
-   The code-reviewer checks the result against the plan and confirms the acceptance
-   criteria pass. (GMDW independently re-runs the declared tests; a manifest that
-   claims "tests pass" but doesn't will freeze the workflow.)
-4. **It asks you to deploy.** GMDW prepares a branch and a PR body from the artifact
-   trail and stops:
-   > *Deployment approval — approve to open the PR, or reject?*
+1. **Analysis and planning.** The analyst-planner maps the export CLI, scores the
+   change *medium*, and writes a plan: which files change, the acceptance criteria,
+   the test. One agent, one context — it doesn't hand its own analysis to a second
+   agent to read again from scratch.
+2. **You approve the plan.** GMDW prints it and stops:
+   > *Your decision on the plan gate [approve/revise/reject]:*
 
-   You approve. GMDW opens the PR and closes the workflow.
+   You read the file list, see it's exactly what you expected, and approve.
+3. **It implements.** The implementor writes the `--dry-run` flag, a test, and the
+   help text — confined by the gate to exactly the files the plan named. A write
+   anywhere else is denied at the tool call.
+4. **It reviews.** The reviewer checks the diff against the plan for correctness,
+   security and the acceptance criteria. (GMDW independently re-runs the declared
+   tests; a manifest that claims "tests pass" but doesn't will freeze the workflow.)
+5. **You approve the result.** GMDW prints the findings and the diff and stops
+   again. You read it and approve.
+6. **You approve the deployment.** GMDW prepares a branch and a PR body from the
+   artifact trail and asks one last time. You approve; it opens the PR and closes
+   the workflow.
 
-On a **full-route** change (say, "Add API-key auth to the public endpoints"), the
-only difference you'd feel is one extra prompt up front — approving the plan (now
-also security-reviewed) before implementation begins.
+On a **full-route** change (say, "Add API-key auth to the public endpoints") the
+gates are the same three — what changes is the rigour behind them: the reviewer's
+`## Security Checklist` becomes mandatory and an empty one is not an approval,
+fewer revisions are permitted before escalation, and `--auto-approve` cannot apply
+at all.
 
 ---
 
@@ -155,8 +204,9 @@ also security-reviewed) before implementation begins.
 GMDW narrates as it goes, but if you want the raw state:
 
 ```bash
-.workflow/bin/wf status      # current state, route, counters, budget
-.workflow/bin/wf expected    # what the workflow is waiting for right now
+python3 -m gmdw.orchestrator status   # state, budget, and what it's waiting for
+.workflow/bin/wf status               # counters, limits, approvals, escalations
+.workflow/bin/wf expected              # the exact artifacts the current stage owes
 ```
 
 Everything the run did is recorded under `.workflow/runs/<id>/`: the state, an
@@ -170,7 +220,8 @@ shipped change is traceable end to end.
 GMDW is designed to fail safe — at worst it stops and asks, never proceeds
 ungoverned. The situations you might hit:
 
-- **"governance hooks are not active"** on start → you're not rooted in this repo.
+- **"the governance hooks are not fully registered"** on start → you're not rooted
+  in this repo.
   Relaunch Claude Code with `gmdw-claude-code` as the project root. (See [Setup](#setup).)
 - **A reviewer rejects, or a limit is reached** → GMDW escalates to you (see
   [touchpoints](#your-touchpoints-the-human-gates)). Pick redirect / override /
@@ -202,5 +253,7 @@ If in doubt, `wf status` shows exactly where the workflow is, and escalating
   hooks enforce governance.
 - **[docs/KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)** — what GMDW deliberately
   does and does not guarantee.
+- **[MIGRATION.md](../MIGRATION.md)** — what changed in v0.3.0 (deterministic
+  orchestrator, Markdown artifacts, three agents, human gates) and why.
 - **[docs/adr/](adr/)** — the design decisions (ADR-001: acceptance authority and
   hook liveness).

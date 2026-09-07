@@ -1,113 +1,184 @@
-# GMDW — Smoke Test Workflows
+# GMDW Smoke Tests — first live runs
 
-Three end-to-end workflows for the live run, one per route. Each is designed to be run
-against a small throwaway target repo (or a `sandbox/` subtree of this repo) so the
-Implementor has real files to touch. Use the `standard` profile unless noted.
+Three scripted runs that exercise the whole system against a real model, in
+increasing order of governance weight. The automated suites already prove every
+guarantee against a *simulated* model (`python3 -m unittest discover -s tests -t
+tests`, 146 tests, no model called); these answer the questions only a live run
+can: does the `claude` CLI behave the way `gmdw/runner.py` assumes, do the hooks
+actually fire inside a child session, and is the human experience at the gates
+one a person can actually act on.
 
-For each: the prompt to type, the expected route, the artifacts that must appear
-(under `.workflow/runs/<id>/artifacts/`), the human approvals required, and the audit
-entries that must be present in `decision_log.jsonl`.
+Run them in order. Each says what to type, what you should see, and what it
+proves. Stop and file a finding the moment reality diverges — a smoke test that
+"basically worked" has proved nothing.
 
-> Note on model policy: the standard profile assigns `opus` to planner/reviewers and
-> `sonnet` to repo-analyst/implementor. If V3 shows the runtime does not honor
-> per-invocation model selection, treat the model column as advisory (see R3).
+## Before you start
 
----
+```bash
+.workflow/bin/wf doctor            # must report REGISTERED (exit 0)
+which claude                       # or set GMDW_CLAUDE_BIN
+python3 -m unittest discover -s tests -t tests   # must print OK
+```
 
-## Workflow A — Simple (trivial route)
+A headless `claude -p` session cannot answer a tool-permission prompt. Set the
+permission posture your environment calls for before the first run — GMDW does not
+pick one for you:
 
-- **Prompt:** `/gmdw Rename the constant DEFAULT_TIMEOUT to DEFAULT_TIMEOUT_SECONDS in sandbox/config.py and update its references`
-- **Expected route:** `trivial` (score ≤ 3, no flags).
-- **Expected state path:**
-  `RECEIVED → CLASSIFYING → IMPLEMENTING → CODE_REVIEW → APPROVED → COMPLETED`
-- **Expected artifacts:**
-  - `classification_v1.json` (route `trivial`, `override_flags: []`)
-  - `implementation_v1/manifest.json` (+ `diff.patch`, `test_output.txt`)
-  - `code_review_v1.json` (`mode: code`, `verdict: approve`)
-  - `approvals/deployment_approval.json`
-- **Expected approvals:** deployment only (plan gate is `off` on trivial/standard).
-- **Expected audit entries:** `workflow_created`; `transition` ×5 (to CLASSIFYING,
-  IMPLEMENTING, CODE_REVIEW, APPROVED, COMPLETED); `invocation_requested` +
-  `invocation_completed` ×2 (implementor, code-reviewer); `artifact_written` /
-  `artifact_accepted` for the implementation and code_review; `verification`
-  (tests_rerun, if the manifest declares a runnable command); `human_approval`
-  (deployment); `workflow_closed`.
-- **What it proves:** the shortest legal path; classification→route sync;
-  code-review-before-approval even with no plan; deployment gate on the simplest task.
+```bash
+export GMDW_CLAUDE_ARGS="--permission-mode acceptEdits"
+```
+
+The PreToolUse gate still runs inside every child session regardless, so this
+widens what an agent may *attempt*, never what it may do.
+
+Each run writes to `.workflow/runs/<id>/`. Keep the directory; it is the evidence.
 
 ---
 
-## Workflow B — Medium
+## S1 — trivial route, gates waived
 
-- **Prompt:** `/gmdw Add structured request/response logging to sandbox/api/handlers.py using the existing logger, without changing handler behavior`
-- **Expected route:** `medium` (score 4–8, no override flags).
-- **Expected state path:**
-  `RECEIVED → CLASSIFYING → REPOSITORY_ANALYSIS → PLANNING → IMPLEMENTING → CODE_REVIEW → COMPLETED`
-  (On standard/medium the plan gate is `notify` — non-blocking — so `PLAN_REVIEW` is
-  taken per the guard's medium-route allowance only if the Orchestrator routes to it;
-  the documented medium path skips agent plan review and the plan gate is a
-  notification. `APPROVED` is still traversed before `COMPLETED`.)
-- **Expected artifacts:**
-  - `classification_v1.json` (route `medium`)
-  - `repo_analysis_v1.json` (test_command, conventions, relevant_modules with evidence)
-  - `classification_v2.json` (re-scored post-analysis; route may confirm/adjust)
-  - `plan_v1.json` (milestones, acceptance_criteria, files[])
-  - `implementation_v1/manifest.json` (+ diff, test output)
-  - `code_review_v1.json` (`verdict: approve`, all acceptance_criteria `pass`)
-  - `approvals/deployment_approval.json`
-- **Expected approvals:** deployment (blocking, always). Plan gate = notify → a
-  one-paragraph summary surfaced to the human, **no** approval artifact.
-- **Expected audit entries:** `workflow_created`; transitions for the full medium path;
-  `invocation_requested/_completed` ×3 (repo-analyst, planner, implementor,
-  code-reviewer — i.e. ×4 if plan review is skipped, agent count = analyst+planner+
-  implementor+code-reviewer); `artifact_accepted` for each; `verification`;
-  `human_approval` (deployment); `workflow_closed`.
-- **What it proves:** repository analysis feeding a plan; the plan-as-contract scoping
-  the Implementor's writes; medium-route gate policy (notify, not block); re-scoring.
+**Request.** Something genuinely small and self-contained, e.g. *"Add a `--version`
+flag that prints the package version to the export CLI."*
 
----
+```bash
+printf 'Add a --version flag to the export CLI.\n' > /tmp/s1.md
+python3 -m gmdw.orchestrator run /tmp/s1.md --by "$USER" --auto-approve
+```
 
-## Workflow C — Security-sensitive (full route)
+**Expected states.**
+`RECEIVED → ANALYSIS_PLANNING → PLAN_APPROVAL → IMPLEMENTING → REVIEW →
+FINAL_APPROVAL → APPROVED → COMPLETED`
 
-- **Prompt:** `/gmdw Add authentication middleware to sandbox/api that validates a bearer token on every /api route and rejects unauthenticated requests with 401`
-- **Expected route:** `full` with `override_flags: ["security"]` (security dimension ≥ 2
-  forces full route + the security review states).
-- **Expected state path:**
-  `RECEIVED → CLASSIFYING → REPOSITORY_ANALYSIS → PLANNING → PLAN_REVIEW →
-  PLAN_SECURITY_REVIEW → PLAN_APPROVAL → IMPLEMENTING → SECURITY_REVIEW →
-  CODE_REVIEW → APPROVED → COMPLETED`
-- **Expected artifacts:**
-  - `classification_v1.json` then `classification_v2.json` (flags include `security`)
-  - `repo_analysis_v1.json`
-  - `plan_v1.json` (possibly `plan_v2.json` if plan review returns `revise`)
-  - `plan_review_v1.json` (`mode: plan`)
-  - `security_review_plan_v1.json` (`mode: plan`, non-empty `checked[]`)
-  - `approvals/plan_approval.json`
-  - `implementation_v1/manifest.json` (+ diff, test output)
-  - `security_review_code_v1.json` (`mode: code`, non-empty `checked[]`, `verdict: approve`)
-  - `code_review_v1.json` (`verdict: approve`, all acceptance_criteria `pass`)
-  - `approvals/deployment_approval.json`
-- **Expected approvals:** **plan approval** (blocking on full route) AND **deployment
-  approval**. If the classification's architectural dimension ≥ 2, an
-  **architecture approval** may also be requested (config-routed).
-- **Expected audit entries:** `workflow_created`; the full transition chain;
-  `invocation_requested/_completed` for analyst, planner, plan-reviewer,
-  security-reviewer (plan), implementor, security-reviewer (code), code-reviewer;
-  `artifact_accepted` for each; `verification`; `human_approval` ×2 (plan, deployment);
-  `workflow_closed`.
-- **What it proves:** the flagged full route cannot skip `PLAN_SECURITY_REVIEW` or
-  `SECURITY_REVIEW` (guard-enforced); plan-approval gate blocks before implementation;
-  the code path cannot reach `APPROVED` without a matching-version security approval;
-  two independent human gates.
+Note that the gate *states* are still traversed — `--auto-approve` records an
+approval at them, it does not remove them.
+
+**Expected artifacts.** `repo_analysis_v1.md`, `classification_v1.md` (route
+`trivial`), `plan_v1.md`, `implementation_v1/{manifest.md,diff.patch,test_output.txt}`,
+`review_v1.md`, and three approval records.
+
+**Expected audit entries.** `workflow_created` (with `auto_approve: true`);
+`auto_approve_enabled`; `transition` ×7; `invocation_requested` /
+`invocation_completed` ×3; `hook_liveness` once per leg; `artifact_written` and
+`artifact_accepted` for each artifact; `verification` (the test re-run);
+`auto_approve_used` ×2 (plan, final); `human_approval` ×3; `workflow_closed`.
+
+**You should still be asked once** — the deployment gate is a policy floor and
+`--auto-approve` never touches it.
+
+**What it proves.** The loop runs end to end against a real model; the hooks fire
+inside child sessions (`hook_liveness` is present, so the orchestrator accepted the
+artifacts); `--auto-approve` applies exactly where policy permits and nowhere else.
+
+**Check by hand:**
+```bash
+jq -r 'select(.event=="auto_approve_used") | .gate' .workflow/runs/<id>/decision_log.jsonl
+jq -r '.human_approved, .auto_approved' .workflow/runs/<id>/artifacts/approvals/final_approval_1.json
+# expect: plan, final  /  false, true
+```
+An `auto_approved` approval must record `human_approved: false`. If it claims a
+human looked at it, that is a P0 finding.
 
 ---
 
-## Running notes
+## S2 — medium route, all three gates
 
-- Prepare `sandbox/` with the referenced files before each run, and commit it, so the
-  Implementor's `base_commit` ancestry check has a clean HEAD.
-- After each run, archive the run directory (`.workflow/runs/<id>/`) as the evidence
-  bundle; it is self-contained and diff-able.
-- If any smoke test diverges from its documented state path, stop and consult
-  `LIVE_VALIDATION_PLAN.md` V7 before proceeding — a route/guard deviation is
-  higher-priority than completing the run.
+**Request.** An everyday change across two or three files, e.g. *"Add a `--dry-run`
+flag to the export CLI so users can preview an export."*
+
+```bash
+printf 'Add a --dry-run flag to the export CLI so users can preview an export.\n' > /tmp/s2.md
+python3 -m gmdw.orchestrator run /tmp/s2.md --by "$USER"
+```
+
+**Expected states.** The same seven transitions — but you answer all three gates.
+
+**What to actually read at each gate** (this is the test):
+
+1. **Plan gate.** Is the `FILES IN SCOPE` list one you'd have written? Are the
+   acceptance criteria checkable, or are they "works correctly"? Try
+   **`revise`** the first time through with a real instruction, confirm the run
+   loops back to `ANALYSIS_PLANNING`, produces `plan_v2.md`, and that
+   `plan_revisions` incremented. Then approve.
+2. **Final gate.** You get the findings *and the diff*. Read the diff. The whole
+   point of this gate is that a person looked at the code — if the diff is
+   unreadable at this length, that is a finding about the presentation, not about
+   you.
+3. **Deployment gate.**
+
+**Also exercise the parked path.** Interrupt at a gate (Ctrl-C or answer nothing)
+and confirm the orchestrator exits `2` with a briefing rather than hanging, then:
+
+```bash
+.workflow/bin/wf approve plan --decision approved --by "$USER"
+python3 -m gmdw.orchestrator resume
+```
+
+The resumed run must pick up exactly where it stopped, from a *fresh process*.
+
+**What it proves.** The human gates are usable, not just present; the plan-revision
+loop works end to end; the run is resumable because the orchestrator holds no state
+the run directory does not.
+
+---
+
+## S3 — full route, security-flagged
+
+**Request.** Something that genuinely touches an auth or data surface, e.g. *"Add
+API-key authentication to the public endpoints."*
+
+```bash
+printf 'Add API-key authentication to the public endpoints.\n' > /tmp/s3.md
+python3 -m gmdw.orchestrator run /tmp/s3.md --by "$USER"
+```
+
+**Expected classification.** `route: full`, `flags: security` (a security score of
+2+ forces it). Confirm in `classification_v1.md` — and confirm `wf status` shows
+`flags.security: true`, i.e. the route was synced from the artifact, not asserted.
+
+**Expected additions.** `review_v1.md` must carry a non-empty `## Security
+Checklist` with real `area | evidence` rows. An empty one is rejected by the
+acceptance pipeline, and the run will retry once and then escalate.
+
+**Adversarial checks to run by hand** (from an ordinary terminal, *not* inside an
+agent session):
+
+```bash
+# 1. an LLM verdict alone must not reach APPROVED
+.workflow/bin/wf status | jq .state          # FINAL_APPROVAL, review verdict approve
+.workflow/bin/wf transition APPROVED --trigger x
+# expect: exit 1, "human sign-off on the review and the diff is required"
+
+# 2. an approval must name the current review
+.workflow/bin/wf approve final --decision approved --by "$USER"
+jq -r .subject_ref .workflow/runs/<id>/artifacts/approvals/final_approval_1.json
+# expect: artifacts/review_v1.md — not empty
+
+# 3. push is gated on the deployment approval, not on APPROVED alone
+git push        # from inside an agent session: denied
+```
+
+**What it proves.** The security flag propagates from the classification artifact
+into the guards; the merged Reviewer preserves the dedicated security reviewer's
+one real guarantee (an empty checklist is not an approval); and the human gate is
+the only path to `APPROVED`.
+
+---
+
+## Recording what you find
+
+For each run, keep the run directory and note:
+
+- **Token and cost totals** (`wf status | jq .budget`). Compare against the
+  profile's `token_budget` and `cost_ceiling_usd`. This is the first real evidence
+  for the cost claim in `MIGRATION.md`, which is currently structural rather than
+  measured — if a standard-profile run does not fit in 900,000 tokens and 8
+  invocations, say so.
+- **Whether usage was exact** (`estimated: false` on `invocation_completed`). If
+  the `claude` CLI's JSON envelope does not carry `usage`, the budget falls back to
+  a size estimate and every budget number is coarser than it looks.
+- **Any retry.** `invocation_requested` with `attempt: 2` means an artifact was
+  rejected. Read the rejection reason: it should name one section or one row. If it
+  says something vague, that is a defect in `gmdw/parsers.py`, because the whole
+  Markdown-artifact argument rests on corrections being local.
+- **Anything you had to do by hand.** A step you performed that the orchestrator
+  should have is the most valuable finding in the whole exercise.
