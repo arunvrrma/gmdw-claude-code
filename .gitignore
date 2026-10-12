@@ -10,3 +10,4 @@ __pycache__/
 .workflow/runs/
 # Stray top-level request scratch file written outside a run directory.
 .workflow/request.md
+.workflow/index.json
